@@ -1,0 +1,23 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+dist-ssr/
+
+# Environment variables (API keys - never commit these)
+.env
+*.env
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Audit / logs (sensitive evidence logs)
+audit.log
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
