@@ -35,7 +35,14 @@ from mail_fetcher import (
 
 load_dotenv()
 
-db.init_db()
+try:
+    db.init_db()
+    logging.info("Database schema ready")
+except Exception as exc:
+    logging.error(
+        "DATABASE NOT REACHABLE — set the DATABASE_URL environment variable "
+        "to your cloud Postgres connection string. Details: %s", exc,
+    )
 
 IPINFO_TOKEN = os.getenv("IPINFO_TOKEN", "")
 VT_API_KEY = os.getenv("VT_API_KEY", "")
