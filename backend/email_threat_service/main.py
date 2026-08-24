@@ -771,6 +771,238 @@ def derive_ttps(flags: List[str], bec: dict, origin_attribution: dict) -> List[d
     return list(found.values())
 
 
+# ── Attack Reconstruction Engine ─────────────────────────────────────────────
+# Rebuilds the probable attack chain from observed evidence. Every stage is
+# explicitly labeled OBSERVED (backed by email evidence) or INFERRED (predicted
+# from threat patterns). No active content is ever executed.
+
+def reconstruct_attack(result: dict) -> dict:
+    stages = []
+
+    def stage(name, observed, evidence, note=""):
+        stages.append({
+            "name": name,
+            "status": "observed" if observed else "inferred",
+            "evidence": evidence,
+            "note": note,
+        })
+
+    urls = result.get("url_analysis") or []
+    dangerous_urls = [u for u in urls if u.get("obfuscated") or u.get("suspicious_tld") or u.get("has_ip")]
+    atts = result.get("attachments") or []
+    bad_atts = [a for a in atts if a.get("dangerous") or a.get("double_extension")]
+    bec = result.get("bec") or {}
+    spoof = result.get("display_name_spoofing") or {}
+    origin = (result.get("origin_attribution") or {}).get("origin_type", "")
+    intel = result.get("intel_matches") or []
+    geo = [g for g in (result.get("geo") or []) if g.get("tor") or g.get("vpn")]
+
+    # Stage 1 — delivery infrastructure (always evidenced by headers)
+    hop_evidence = [f"Relay chain: {len(result.get('hops') or [])} Received header(s)"]
+    for g in geo:
+        hop_evidence.insert(0, f"{g['ip']} via {'TOR exit' if g.get('tor') else 'suspicious ASN'} ({g.get('city','?')}, {g.get('country','?')})")
+    stage("Attack infrastructure staged & email delivered", True, hop_evidence,
+          "Reconstructed from Received headers and IP geolocation")
+
+    # Sender deception
+    spoof_evidence = []
+    auth = result.get("auth", {})
+    if auth.get("spf") in ("fail", "none"): spoof_evidence.append(f"SPF {auth['spf']}")
+    if auth.get("dmarc") in ("fail", "none"): spoof_evidence.append(f"DMARC {auth['dmarc']}")
+    if spoof.get("is_spoofed"): spoof_evidence += spoof.get("techniques", [])
+    if result.get("reply_to_mismatch") if isinstance(result, dict) else False:
+        pass
+    reply_to = result.get("reply_to") or ""
+    from_addr = result.get("from") or ""
+    if reply_to and re.search(r"@([\w.\-]+)", reply_to) and re.search(r"@([\w.\-]+)", from_addr) \
+       and re.search(r"@([\w.\-]+)", reply_to).group(1) != re.search(r"@([\w.\-]+)", from_addr).group(1):
+        spoof_evidence.append("Reply-To domain differs from sender domain")
+    if intel:
+        spoof_evidence.append(f"Infrastructure previously seen in {len({m['value'] for m in intel})} stored indicator(s)")
+    if spoof_evidence:
+        stage("Sender identity disguised to impersonate a trusted party",
+              True, spoof_evidence[:4],
+              "Observed authentication/display-name anomalies")
+    elif origin == "compromised_account":
+        stage("Legitimate mailbox used as launch platform (likely compromised)",
+              True, ["SPF/DKIM passed on established domain — consistent with account compromise"],
+              "Attribution engine verdict")
+
+    # Lure content
+    lure_added = False
+    if bad_atts:
+        names = ", ".join(a["filename"] for a in bad_atts[:2])
+        det = [f"Attachment(s): {names}"]
+        for a in bad_atts:
+            if a.get("double_extension"):
+                det.append(f"Double-extension disguise ({a['filename']})")
+            if a.get("sha256"):
+                det.append(f"SHA256 {a['sha256'][:16]}…")
+        stage("Malicious payload attached to the email", True, det)
+        lure_added = True
+
+    if urls:
+        link_ev = [u["url"][:60] for u in (dangerous_urls or urls)[:2]]
+        stage("Lure links embedded in message body", True, link_ev)
+        lure_added = True
+
+    if not lure_added and (bec.get("payment_diversion") or bec.get("invoice_fraud")):
+        stage("Social-engineering text only — no artifact, relies on reply", True,
+              [f"BEC language: {', '.join(sum(bec.values(), [])[:3])}"])
+
+    # Inferred progression — pick the dominant kill-chain
+    if urls and (bec.get("credential_harvest") or any(u["url"].startswith("http://") for u in urls)):
+        stage("Victim clicks link → lands on credential-harvest page", False,
+              ["Link present + credential/verification language"], "Predicted: classic phishing funnel")
+        stage("Credentials harvested → mailbox/account takeover", False,
+              [], "Predicted follow-on impact")
+        stage("Account abuse: fraud, lateral phishing, data theft", False,
+              [], "Predicted end state")
+    elif bad_atts:
+        stage("Recipient opens attachment → macro/payload executes", False,
+              [f"Dangerous extension(s): {', '.join(a['extension'] for a in bad_atts)}"],
+              "Predicted: user-execution path")
+        stage("Payload beacons to attacker C2 / stages ransomware", False,
+              [], "Predicted end state")
+    elif bec:
+        stage("Recipient trusts the impersonated executive/partner", False,
+              [], "Predicted: social-engineering escalation")
+        stage("Fraudulent payment or data request fulfilled", False,
+              [f"BEC pattern(s): {', '.join(bec.keys())}"], "Predicted financial impact")
+    else:
+        stage("Recipient interacts with deceptive content", False,
+              [], f"Predicted generic risk path ({result.get('label','').title()} risk)")
+
+    summary_parts = [stages[0]["name"]] if stages else []
+    chain_names = {
+        "phishing": "Phishing Email → Malicious URL → Fake Login Page → Credential Theft",
+        "malware": "Phishing Email → Malicious Attachment → Payload Execution → C2 / Ransomware",
+        "bec": "Impersonation Email → Trust Exploitation → Payment Diversion → Financial Loss",
+    }
+    bec_keys = set(bec.keys())
+    if urls and (bec_keys & {"credential_harvest"} or any(u["url"].startswith("http://") for u in urls)):
+        summary = chain_names["phishing"]
+    elif bad_atts:
+        summary = chain_names["malware"]
+    elif bec:
+        summary = chain_names["bec"]
+    else:
+        summary = " → ".join(re.sub(r"\s*\(.*?\)\s*", "", s["name"]) for s in stages)
+
+    return {"summary": summary, "stages": stages}
+
+
+# ── Threat Scenario Simulation ───────────────────────────────────────────────
+# Safe what-if reconstruction. Steps labeled SIMULATED are never executed —
+# this is analyst decision support only.
+
+def simulate_scenarios(result: dict) -> list:
+    score = result.get("score", 0)
+    label = result.get("label", "LOW")
+    urls = result.get("urls") or []
+    atts = result.get("attachments") or []
+    bec = bool(result.get("bec"))
+    scenarios = []
+
+    base_risk = {"CRITICAL": 0.85, "HIGH": 0.6, "MEDIUM": 0.3, "LOW": 0.08}.get(label, 0.2)
+
+    scenarios.append({
+        "scenario": "Ignore / delete the email",
+        "likelihood": 1 - min(base_risk + 0.15, 0.95),
+        "impact": "None — attack chain broken at first step",
+        "outcome": "safe",
+        "steps": [
+            {"step": "Email reported/deleted without interaction", "status": "recommended"},
+            {"step": "Indicators already shared to the intelligence repository", "status": "observed"},
+        ],
+    })
+
+    if urls:
+        cred = bool((result.get("bec") or {}).get("credential_harvest")) or any(u.startswith("http://") for u in urls)
+        scenarios.append({
+            "scenario": "Click the malicious URL",
+            "likelihood": min(base_risk + 0.1, 0.9),
+            "impact": "Credential theft / session compromise" if cred else "Exposure to phishing landing page",
+            "outcome": "critical" if cred else "high",
+            "steps": [
+                {"step": f"Landing page at {urls[0][:48]} renders", "status": "simulated"},
+                *([{"step": "Fake login form presented (brand-imitated)", "status": "simulated"}] if cred else []),
+                *([{"step": "Submitted credentials relayed to attacker", "status": "simulated"}] if cred else []),
+                *([{"step": "Account takeover → internal phishing from victim mailbox", "status": "simulated"}] if cred else [{"step": "Further redirect/scam exposure", "status": "simulated"}]),
+            ],
+        })
+    else:
+        scenarios.append({
+            "scenario": "Click links in the email",
+            "likelihood": 0,
+            "impact": "Not applicable — no links found in body",
+            "outcome": "none",
+            "steps": [{"step": "No URLs extracted from this email", "status": "observed"}],
+        })
+
+    if atts:
+        risky = [a for a in atts if a.get("dangerous") or a.get("double_extension")]
+        scenarios.append({
+            "scenario": "Open the attachment",
+            "likelihood": min(base_risk + (0.12 if risky else 0), 0.9),
+            "impact": "Payload execution → malware/ransomware staging" if risky else "Low risk — benign file type",
+            "outcome": "critical" if risky else "low",
+            "steps": [
+                {"step": f"File saved: {atts[0]['filename']}", "status": "simulated"},
+                *([{"step": "Double-extension/macro trick executes hidden payload", "status": "simulated"}] if any(a.get("double_extension") for a in atts) else []),
+                *([{"step": "Malware installs persistence; beacon to C2 server", "status": "simulated"}] if risky else [{"step": "Document opens normally", "status": "simulated"}]),
+                *([{"step": "Lateral movement / data encryption begins", "status": "simulated"}] if risky else []),
+            ],
+        })
+    else:
+        scenarios.append({
+            "scenario": "Open attachments",
+            "likelihood": 0,
+            "impact": "Not applicable — no attachments present",
+            "outcome": "none",
+            "steps": [{"step": "No attachments in this email", "status": "observed"}],
+        })
+
+    if bec:
+        scenarios.append({
+            "scenario": "Reply to the sender / comply with the request",
+            "likelihood": min(base_risk + 0.05, 0.85),
+            "impact": "BEC payment diversion or sensitive-data disclosure",
+            "outcome": "critical",
+            "steps": [
+                {"step": "Trust established with impersonated identity", "status": "simulated"},
+                {"step": "Invoice/banking details honored → funds diverted", "status": "simulated"},
+            ],
+        })
+
+    return scenarios
+
+
+# ── Collective Intelligence Matching ────────────────────────────────────────
+
+def collect_intel_matches(from_domain: str, ips: List[str], url_analysis: List[dict], attachments: List[dict]) -> List[dict]:
+    values = []
+    if from_domain:
+        values.append(("DOMAIN", from_domain.lower()))
+    for ip in ips:
+        values.append(("IP", ip))
+    for ua in url_analysis:
+        host = (ua.get("url") or "").split("/")[2].lower() if "//" in (ua.get("url") or "") else None
+        if host:
+            values.append(("URL_HOST", host))
+    for a in attachments:
+        if a.get("sha256"):
+            values.append(("FILE_HASH", a["sha256"]))
+    seen, uniq = set(), []
+    for t, v in values:
+        if v not in seen:
+            seen.add(v)
+            uniq.append({"type": t, "value": v})
+    known = db.find_known_indicators(uniq)
+    return known
+
+
+
 # ── SSE Alert Dispatcher ─────────────────────────────────────────────────────
 
 async def dispatch_alert(alert_type: str, case_id: str, score: int, label: str, detail: str):
@@ -876,10 +1108,18 @@ def extract_attachments(msg) -> list:
                 ext = os.path.splitext(filename)[1].lower()
                 parts = filename.lower().split(".")
                 double_extension = len(parts) >= 3 and f".{parts[-1]}" in DECEPTIVE_FINAL_EXTS
+                payload = None
+                try:
+                    payload = part.get_payload(decode=True)
+                except Exception:
+                    payload = None
+                sha256 = hashlib.sha256(payload).hexdigest() if payload else None
                 attachments.append({
                     "filename": filename,
                     "content_type": part.get_content_type(),
                     "extension": ext,
+                    "size_bytes": len(payload) if payload else 0,
+                    "sha256": sha256,
                     "dangerous": ext in DANGEROUS_EXTENSIONS,
                     "double_extension": double_extension,
                 })
@@ -1218,6 +1458,16 @@ async def analyze_email(req: EmailRequest):
     from_d_match = re.search(r"@([\w.\-]+)", from_addr)
     reply_to_mismatch = bool(reply_domain and from_d_match and reply_domain.group(1) != from_d_match.group(1))
 
+    # ── Collective intelligence: match indicators against the repository ────
+    intel_matches = collect_intel_matches(from_domain, ips, url_analysis, attachments)
+    if intel_matches:
+        known_str = ", ".join(f"{m['value'][:28]} (seen ×{m['detections']})" for m in intel_matches[:3])
+        score = min(score + 10, 100)
+        flags.append(f"Known threat indicator recurrence: {known_str}")
+        for m in intel_matches:
+            if m.get("campaigns"):
+                flags.append(f"Linked to prior campaign: {m['campaigns'][0]['name']}")
+
     originating_ip = find_originating_ip(hops, ips)
     if originating_ip.get("ip"):
         og = next((g for g in geo_results if g["ip"] == originating_ip["ip"]), None)
@@ -1250,6 +1500,17 @@ async def analyze_email(req: EmailRequest):
     masked_body = mask_pii(body)
 
     label, accent = _label(score)
+
+    # ── Attack reconstruction & scenario simulation (on final scored result) ─
+    result_pre = {
+        "from": from_addr, "reply_to": reply_to, "auth": auth, "bec": bec,
+        "urls": urls, "url_analysis": url_analysis, "attachments": attachments,
+        "hops": hops, "geo": geo_results, "score": score, "label": label,
+        "display_name_spoofing": display_spoof,
+        "origin_attribution": origin_attribution, "intel_matches": intel_matches,
+    }
+    attack_chain = reconstruct_attack(result_pre)
+    scenarios = simulate_scenarios(result_pre)
 
     recommendations = _build_recommendations(score, origin_attribution, campaign, flags)
 
@@ -1290,6 +1551,9 @@ async def analyze_email(req: EmailRequest):
         "campaign": campaign,
         "ttps": derived_ttps,
         "recommendations": recommendations,
+        "attack_chain": attack_chain,
+        "scenarios": scenarios,
+        "intel_matches": intel_matches,
         "evidence_hash": evidence_hash,
         "retention_days": PRIVACY_CONFIG["retention_days"],
         "mask_pii_applied": PRIVACY_CONFIG["mask_pii"],
@@ -1325,6 +1589,15 @@ async def analyze_email(req: EmailRequest):
             else:
                 st, ac, desc = "WATCHLIST", "yellow", f"{g.get('city') or 'Unknown'}, {g.get('country') or ''}"
             db.upsert_ioc("IP", g["ip"], desc, vt_domain.get("malicious", 0) if st != "WATCHLIST" else 0, st, ac)
+
+        for a in attachments:
+            if not a.get("sha256"):
+                continue
+            risky = a.get("dangerous") or a.get("double_extension")
+            st = "MALICIOUS" if risky and score >= 75 else ("SUSPICIOUS" if risky else "WATCHLIST")
+            ac = "red" if st == "MALICIOUS" else ("orange" if st == "SUSPICIOUS" else "yellow")
+            db.upsert_ioc("FILE_HASH", a["sha256"],
+                          f"{a['filename']} · {a.get('size_bytes', 0)} bytes", vt_domain.get("malicious", 0) if risky else 0, st, ac)
 
         for ua in url_analysis:
             u = ua.get("url")
@@ -1639,6 +1912,9 @@ def get_cached_analysis(case_id: str):
         "campaign": analysis.get("campaign", {}),
         "ttps": analysis.get("ttps", []),
         "recommendations": analysis.get("recommendations", []),
+        "attack_chain": analysis.get("attack_chain", {}),
+        "scenarios": analysis.get("scenarios", []),
+        "intel_matches": analysis.get("intel_matches", []),
         "evidence_hash": analysis.get("evidence_hash", {}),
         "analyzed_at": analysis.get("analyzed_at"),
     }
@@ -1649,6 +1925,76 @@ def get_geoip(ip: str):
     if not is_valid_public_ip(ip):
         raise HTTPException(status_code=400, detail="Invalid or private IP address")
     return geoip(ip)
+
+
+# ── Intelligence API v1 (sanitized collective-intel endpoints) ───────────────
+# Read-only surface for future consumers: email gateways, SIEM/SOC tools,
+# EDR/AV and browser-security products. Never exposes raw email content.
+
+@app.get("/api/v1/indicators")
+def api_v1_indicators(
+    type: Optional[str] = None,
+    status: Optional[str] = None,
+    min_detections: int = 0,
+    limit: int = 100,
+    offset: int = 0,
+):
+    limit = max(1, min(limit, 500))
+    where, vals = ["TRUE"], []
+    if type:
+        where.append("type = %s"); vals.append(type.upper())
+    if status:
+        where.append("status = %s"); vals.append(status.upper())
+    where.append(f"detections >= {int(min_detections)}")
+    with db.get_conn() as conn, conn.cursor(row_factory=db.dict_row) as cur:
+        cur.execute(
+            f"""SELECT type, value, threat, detections, vt, status, accent,
+                       first_seen, last_seen
+                FROM iocs WHERE {' AND '.join(where)}
+                ORDER BY detections DESC, last_seen DESC
+                LIMIT {limit} OFFSET {int(offset)}""",
+            vals,
+        )
+        rows = cur.fetchall()
+        cur.execute(f"SELECT COUNT(*) AS n FROM iocs WHERE {' AND '.join(where)}", vals)
+        total = cur.fetchone()["n"]
+    return {
+        "total": total, "count": len(rows), "limit": limit, "offset": offset,
+        "indicators": [
+            {
+                "type": r["type"], "value": r["value"], "threat": r["threat"],
+                "detections": r["detections"], "vt_detections": r["vt"],
+                "status": r["status"], "severity": r["accent"],
+                "first_seen": r["first_seen"].isoformat() if r["first_seen"] else None,
+                "last_seen": r["last_seen"].isoformat() if r["last_seen"] else None,
+            } for r in rows
+        ],
+    }
+
+
+@app.get("/api/v1/campaigns")
+def api_v1_campaigns(limit: int = 50, offset: int = 0):
+    limit = max(1, min(limit, 200))
+    camps = db.list_campaigns()
+    return {
+        "total": len(camps), "count": len(camps[offset:offset + limit]),
+        "campaigns": [
+            {
+                "id": c["id"], "name": c["name"], "risk": c["risk"],
+                "emails": c["count"], "iocs": c.get("iocs", [])[:10],
+                "ttps": [t.get("id") if isinstance(t, dict) else t for t in c.get("ttps", [])],
+                "first_seen": c.get("first_seen"), "last_seen": c.get("last_seen"),
+            } for c in camps[offset:offset + limit]
+        ],
+    }
+
+
+@app.get("/api/v1/campaigns/{campaign_id}")
+def api_v1_campaign_detail(campaign_id: str):
+    for c in db.list_campaigns():
+        if c["id"] == campaign_id:
+            return c
+    raise HTTPException(status_code=404, detail="Campaign not found")
 
 
 @app.get("/health")

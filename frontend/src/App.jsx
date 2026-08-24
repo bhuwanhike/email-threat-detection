@@ -243,7 +243,7 @@ function downloadReport(result) {
 
   const lines = [
     "================================================================",
-    "       MAILSHIELD — AI-POWERED FORENSIC INTELLIGENCE REPORT",
+    "       MAILSHIELD — EMAIL THREAT INTELLIGENCE HUB REPORT",
     "       CONFIDENTIAL — FOR AUTHORIZED INVESTIGATIVE USE ONLY",
     "================================================================",
     `Generated   : ${new Date().toISOString()}`,
@@ -363,7 +363,7 @@ function downloadReport(result) {
   URL.revokeObjectURL(url);
 }
 
-function CorrelationGraphView({ graph }) {
+function CorrelationGraphView({ graph, height = 250 }) {
   const nodes = graph?.nodes || [];
   const edges = graph?.edges || [];
   if (nodes.length === 0) return null;
@@ -382,7 +382,7 @@ function CorrelationGraphView({ graph }) {
 
   return (
     <div style={{ marginTop: 6 }}>
-      <svg viewBox="0 0 520 320" style={{ width: "100%", height: 220, borderRadius: 6, border: "1px solid var(--line)", background: "var(--bg-card)" }}>
+      <svg viewBox="0 0 520 320" style={{ width: "100%", height, borderRadius: 6, border: "1px solid var(--line)", background: "var(--bg-card)" }}>
         <defs>
           <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
             <path d="M0,0 L10,5 L0,10 z" fill="var(--muted)" />
@@ -394,7 +394,7 @@ function CorrelationGraphView({ graph }) {
           return (
             <g key={i}>
               <line x1={s[0]} y1={s[1]} x2={t[0]} y2={t[1]} stroke="var(--muted)" strokeWidth="1" markerEnd="url(#arr)" opacity="0.6" />
-              <text x={midX} y={midY} fontSize="7" fill="var(--muted)" textAnchor="middle" style={{ pointerEvents: "none" }}>
+              <text x={midX} y={midY} fontSize="9" fill="var(--muted)" textAnchor="middle" style={{ pointerEvents: "none" }}>
                 {e.type?.replace(/_/g, " ") || ""}
               </text>
             </g>
@@ -405,12 +405,12 @@ function CorrelationGraphView({ graph }) {
           const col = typeColors[n.type] || "#888";
           return (
             <g key={n.id}>
-              <circle cx={x} cy={y} r="14" fill={col} stroke="#fff" strokeWidth="2" />
-              <text x={x} y={y + 3} fontSize="7" textAnchor="middle" fill="#fff" fontWeight="700">
+              <circle cx={x} cy={y} r="17" fill={col} stroke="#fff" strokeWidth="2" />
+              <text x={x} y={y + 3.5} fontSize="9.5" textAnchor="middle" fill="#fff" fontWeight="700">
                 {(n.type || "?").slice(0, 2)}
               </text>
-              <text x={x} y={y + 26} fontSize="7" textAnchor="middle" fill="var(--ink)" style={{ wordBreak: "break-all" }}>
-                {(n.label || "").slice(0, 24)}
+              <text x={x} y={y + 30} fontSize="10" textAnchor="middle" fill="var(--ink)" style={{ wordBreak: "break-all" }}>
+                {(n.label || "").slice(0, 22)}
               </text>
             </g>
           );
@@ -934,16 +934,230 @@ function ConnectAccountModal({ onClose, onCasesFetched, setNotice, onSynced }) {
   );
 }
 
+function GeolocationSection({ analysis }) {
+  const rows = [];
+  const seen = new Set();
+  for (const g of analysis?.geo || []) {
+    if (!g?.ip || seen.has(g.ip)) continue;
+    seen.add(g.ip);
+    rows.push({ ...g, isOrigin: analysis?.originating_ip?.ip === g.ip });
+  }
+  const loc = g => [g.city && g.city !== "Unknown" && g.city !== "Private" ? g.city : null, g.region, g.country].filter(Boolean).join(", ");
+  return (
+    <div className="detail-section">
+      <div className="subhead"><b>Geolocation intelligence</b><span>{rows.length > 0 ? `${rows.length} infrastructure point(s) resolved` : ""}</span></div>
+      {rows.length === 0 ? (
+        <p style={{ color: "var(--muted)", fontSize: 12 }}>
+          No geolocatable public IPs found — this email was relayed entirely through private/internal infrastructure or carried no Received headers.
+        </p>
+      ) : (
+        <div style={{ display: "grid", gap: 8 }}>
+          {rows.map(g => (
+            <div key={g.ip} style={{ display: "flex", alignItems: "center", gap: 11, padding: "10px 13px", border: `1px solid ${g.isOrigin ? "rgba(233,104,86,.4)" : "var(--line)"}`, borderRadius: 6, background: g.isOrigin ? "var(--tint-coral)" : "var(--paper)", minWidth: 0, maxWidth: "100%", overflow: "hidden" }}>
+              <span className={g.tor ? "ioc-type-badge danger" : "ioc-type-badge"} style={!g.tor && g.vpn ? { color: "#bd7d28", background: "#fcf3e3" } : null}>
+                {g.isOrigin ? "ORIGIN" : g.tor ? "TOR EXIT" : g.vpn ? "VPN/ASN" : "RELAY"}
+              </span>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <b style={{ fontFamily: "'Space Mono',monospace", fontSize: 11 }}>{g.ip}</b>
+                <div style={{ fontSize: 10.5, color: "var(--muted)", marginTop: 2, wordBreak: "break-word", overflowWrap: "anywhere" }}>
+                  {loc(g) || "Location unknown"}
+                  {g.org ? ` · ${g.org.slice(0, 44)}` : ""}
+                  {g.timezone ? ` · ${g.timezone}` : ""}
+                </div>
+              </div>
+              {(g.lat || g.lng) ? (
+                <a href={`https://www.google.com/maps?q=${g.lat},${g.lng}`} target="_blank" rel="noreferrer" title={`Open ${loc(g) || g.ip} in Google Maps`} style={{ color: "var(--coral)", display: "inline-flex", alignItems: "center", gap: 4, textDecoration: "none", fontSize: 10, fontWeight: 700, flexShrink: 0 }}>
+                  <Icon name="map" size={14} /> MAP
+                </a>
+              ) : null}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ThreatAnalysisSection({ analysis }) {
+  const a = analysis;
+  if (!a) return null;
+  const authChip = { pass: "mint", fail: "coral", softfail: "amber", neutral: "amber", permerror: "coral", none: "coral", unknown: "amber" };
+  const chipStyle = tone => ({
+    padding: "3px 9px", borderRadius: 4, fontSize: 10, fontWeight: 800,
+    fontFamily: "'Space Mono',monospace", letterSpacing: ".5px",
+    ...(tone === "mint" ? { color: "#34745b", background: "#eaf6f0" }
+      : tone === "coral" ? { color: "#c85344", background: "#fcedea" }
+      : { color: "#aa8a31", background: "#fbf4da" }),
+  });
+  return (
+    <div className="detail-section">
+      <div className="subhead"><b>Threat analysis breakdown</b><span>full forensic assessment</span></div>
+      <div style={{ display: "grid", gap: 12 }}>
+
+        {a.origin_attribution?.origin_label && (
+          <div style={{ border: "1px solid var(--line)", borderRadius: 6, padding: "12px 14px", background: "var(--paper)" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 7 }}>
+              <b style={{ fontSize: 11 }}>ORIGIN ATTRIBUTION</b>
+              <span className="status-pill" style={{ color: "var(--ink)" }}>{a.origin_attribution.confidence ?? "—"}% confidence</span>
+            </div>
+            <p style={{ margin: 0, fontSize: 12.5, fontWeight: 700, color: "var(--coral)" }}>{a.origin_attribution.origin_label}</p>
+            {(a.origin_attribution.reasons || []).length > 0 && (
+              <ul style={{ margin: "8px 0 0", paddingLeft: 16, fontSize: 11, lineHeight: 1.55, color: "var(--muted)" }}>
+                {a.origin_attribution.reasons.slice(0, 6).map((r, i) => <li key={i}>{r}</li>)}
+              </ul>
+            )}
+          </div>
+        )}
+
+        {a.auth && Object.keys(a.auth).length > 0 && (
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+            <b style={{ fontSize: 11, marginRight: 2 }}>EMAIL AUTHENTICATION</b>
+            {["spf", "dkim", "dmarc"].map(k => (
+              <span key={k} style={chipStyle(authChip[a.auth[k]] || "amber")}>{k.toUpperCase()} · {(a.auth[k] || "unknown").toUpperCase()}</span>
+            ))}
+          </div>
+        )}
+
+        {(a.flags || []).length > 0 && (
+          <div>
+            <b style={{ fontSize: 11, display: "block", marginBottom: 6 }}>DETECTION FLAGS ({a.flags.length})</b>
+            <div style={{ display: "grid", gap: 5 }}>
+              {a.flags.map((f, i) => (
+                <div key={i} style={{ display: "flex", gap: 8, alignItems: "baseline", fontSize: 11.5, color: "var(--ink)", padding: "6px 10px", background: "var(--paper)", border: "1px solid var(--line)", borderRadius: 5 }}>
+                  <Icon name="alert" size={12} /> <span>{f}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {(a.ttps || []).length > 0 && (
+          <div>
+            <b style={{ fontSize: 11, display: "block", marginBottom: 6 }}>MITRE ATT&amp;CK TECHNIQUES</b>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+              {a.ttps.map(t => (
+                <span key={t.id} title={t.detail} style={{ display: "inline-flex", alignItems: "center", gap: 6, border: "1px solid var(--line)", borderRadius: 5, padding: "5px 9px", fontSize: 10.5, background: "var(--paper)" }}>
+                  <b style={{ fontFamily: "'Space Mono',monospace", color: "var(--coral)" }}>{t.id}</b> {t.name}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {(a.recommendations || []).length > 0 && (
+          <div style={{ border: "1px solid rgba(86,169,135,.35)", background: "var(--tint-mint)", borderRadius: 6, padding: "12px 14px" }}>
+            <b style={{ fontSize: 11, color: "var(--mint)" }}>RECOMMENDED ACTIONS</b>
+            <ol style={{ margin: "7px 0 0", paddingLeft: 17, fontSize: 11.5, lineHeight: 1.6, color: "var(--ink)" }}>
+              {a.recommendations.slice(0, 6).map((r, i) => <li key={i}>{typeof r === "string" ? r : r.action || r.text || JSON.stringify(r)}</li>)}
+            </ol>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function AttackReconstructionSection({ analysis }) {
+  const chain = analysis?.attack_chain;
+  if (!chain || !chain.stages || chain.stages.length === 0) return null;
+  const observed = chain.stages.filter(s => s.status === "observed").length;
+  return (
+    <div className="detail-section">
+      <div className="subhead"><b>Attack reconstruction</b><span>{observed}/{chain.stages.length} stages evidence-backed</span></div>
+      <p style={{ margin: "0 0 12px", fontFamily: "'Space Mono',monospace", fontSize: 10.5, color: "var(--coral)", background: "var(--paper)", border: "1px dashed var(--line)", borderRadius: 5, padding: "8px 11px" }}>
+        {chain.summary}
+      </p>
+      <div style={{ display: "grid", gap: 0 }}>
+        {chain.stages.map((st, i) => (
+          <div key={i} style={{ display: "flex", gap: 12 }}>
+            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", flexShrink: 0 }}>
+              <span style={{ width: 13, height: 13, borderRadius: "50%", border: `3px solid ${st.status === "observed" ? "#54b486" : "var(--amber)"}`, background: "var(--surface)", flexShrink: 0 }} />
+              {i < chain.stages.length - 1 && <span style={{ width: 2, flex: 1, minHeight: 22, background: st.status === "observed" ? "rgba(84,180,134,.45)" : "rgba(225,161,66,.4)" }} />}
+            </div>
+            <div style={{ paddingBottom: i < chain.stages.length - 1 ? 14 : 0, minWidth: 0, flex: 1 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 7, flexWrap: "wrap" }}>
+                <b style={{ fontSize: 12 }}>{st.name}</b>
+                <span style={{
+                  fontSize: 8.5, fontWeight: 800, letterSpacing: ".6px", padding: "2px 7px", borderRadius: 3,
+                  ...(st.status === "observed"
+                    ? { color: "#34745b", background: "var(--tint-mint)" }
+                    : { color: "#aa8a31", background: "var(--tint-amber, rgba(225,161,66,.14))" }),
+                }}>
+                  {st.status === "observed" ? "OBSERVED" : "INFERRED"}
+                </span>
+              </div>
+              {(st.evidence || []).length > 0 && (
+                <ul style={{ margin: "5px 0 0", paddingLeft: 15, fontSize: 10.5, lineHeight: 1.55, color: "var(--muted)" }}>
+                  {st.evidence.map((e, j) => <li key={j}>{e}</li>)}
+                </ul>
+              )}
+              {st.note && <div style={{ fontSize: 9.5, color: "var(--muted)", marginTop: 4, fontStyle: "italic" }}>{st.note}</div>}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ScenarioSimulationSection({ analysis }) {
+  const scenarios = (analysis?.scenarios || []).filter(s => s.outcome !== "none");
+  const naScenarios = (analysis?.scenarios || []).filter(s => s.outcome === "none");
+  if (!analysis?.scenarios || analysis.scenarios.length === 0) return null;
+  const outcomeTone = o => o === "safe" ? "#34745b" : o === "low" ? "#478b6d" : o === "high" ? "#bd7d28" : o === "critical" ? "#c85344" : "var(--muted)";
+  return (
+    <div className="detail-section">
+      <div className="subhead"><b>Scenario simulation</b><span>safe what-if reconstruction — nothing was executed</span></div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(215px,1fr))", gap: 9 }}>
+        {scenarios.map((s, i) => (
+          <div key={i} style={{ border: `1px solid ${outcomeTone(s.outcome)}44`, borderTop: `3px solid ${outcomeTone(s.outcome)}`, borderRadius: 6, padding: "11px 12px", background: "var(--paper)" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 6 }}>
+              <b style={{ fontSize: 11.5 }}>{s.scenario}</b>
+              <span style={{ fontSize: 9.5, fontWeight: 800, color: outcomeTone(s.outcome), whiteSpace: "nowrap" }}>{Math.round((s.likelihood || 0) * 100)}%</span>
+            </div>
+            <div style={{ height: 4, background: "var(--line)", borderRadius: 2, margin: "7px 0 9px", overflow: "hidden" }}>
+              <div style={{ width: `${Math.round((s.likelihood || 0) * 100)}%`, height: "100%", background: outcomeTone(s.outcome), borderRadius: 2 }} />
+            </div>
+            <ul style={{ margin: 0, paddingLeft: 14, fontSize: 10, lineHeight: 1.55, color: "var(--muted)", listStyleType: "none" }}>
+              {s.steps.map((st, j) => (
+                <li key={j} style={{ marginBottom: 3 }}>
+                  {st.status !== "recommended" && <sup style={{ color: "var(--amber)", fontWeight: 800, fontSize: 7.5, marginRight: 3 }}>SIM</sup>}
+                  {st.step}
+                </li>
+              ))}
+            </ul>
+            <div style={{ marginTop: 8, fontSize: 10, fontWeight: 700, color: outcomeTone(s.outcome) }}>Impact: {s.impact}</div>
+          </div>
+        ))}
+      </div>
+      {naScenarios.length > 0 && (
+        <p style={{ margin: "8px 0 0", fontSize: 10, color: "var(--muted)" }}>
+          Not applicable here: {naScenarios.map(s => s.scenario.toLowerCase()).join("; ")}.
+        </p>
+      )}
+      <p style={{ margin: "8px 0 0", fontSize: 9.5, color: "var(--muted)", fontStyle: "italic" }}>
+        Steps marked SIM are inferred simulations derived from observed indicators — no active content was executed against any system or user.
+      </p>
+    </div>
+  );
+}
+
 export default function App() {
   const [active, setActive] = useState("Overview");
   const [dark, setDark] = useState(() => localStorage.getItem("mailshield_theme") === "dark");
+  const [collapsed, setCollapsed] = useState(() => localStorage.getItem("mailshield_sidebar") === "collapsed");
   const [liveSync, setLiveSync] = useState(null);
   const [liveBusy, setLiveBusy] = useState(false);
+  const [graphFull, setGraphFull] = useState(false);
 
   useEffect(() => {
     document.documentElement.classList.toggle("dark", dark);
     localStorage.setItem("mailshield_theme", dark ? "dark" : "light");
   }, [dark]);
+
+  useEffect(() => {
+    localStorage.setItem("mailshield_sidebar", collapsed ? "collapsed" : "expanded");
+  }, [collapsed]);
 
   function toggleTheme() {
     setDark(d => !d);
@@ -1177,8 +1391,17 @@ export default function App() {
 
   return (
     <div className="app-shell">
-      <aside className="sidebar">
-        <div className="brand" role="button" tabIndex={0} style={{ cursor: "pointer" }} onClick={() => setActive("Overview")} onKeyDown={e => { if (e.key === "Enter") setActive("Overview"); }}><span className="brand-mark"><Icon name="shield" size={22} /></span><span>Mail<span className="brand-dot">Shield</span><small>FORENSIC INTELLIGENCE</small></span></div>
+      <aside className={collapsed ? "sidebar collapsed" : "sidebar"}>
+        <button
+          type="button"
+          className="sb-toggle"
+          title={collapsed ? "Expand sidebar" : "Minimize sidebar"}
+          aria-label={collapsed ? "Expand sidebar" : "Minimize sidebar"}
+          onClick={() => setCollapsed(c => !c)}
+        >
+          <Icon name="chevron" size={12} />
+        </button>
+        <div className="brand" role="button" tabIndex={0} style={{ cursor: "pointer" }} onClick={() => setActive("Overview")} onKeyDown={e => { if (e.key === "Enter") setActive("Overview"); }}><span className="brand-mark"><Icon name="shield" size={22} /></span><span>Mail<span className="brand-dot">Shield</span><small>THREAT INTELLIGENCE HUB</small></span></div>
         <div className="workspace ws-wrap" role="button" tabIndex={0} style={{ cursor: "pointer" }} onClick={() => setWorkspaceMenuOpen(o => !o)} onKeyDown={e => { if (e.key === "Enter") setWorkspaceMenuOpen(o => !o); }}>
           <span className="workspace-avatar">{activeWorkspace ? (activeWorkspace.name || "?").replace(/[^a-zA-Z0-9]/g, "").slice(0, 2).toUpperCase() : "ALL"}</span>
           <span><b>{activeWorkspace?.name || "All Domains"}</b><small>{activeWorkspace ? "Threat domain workspace" : "Global threat view"}</small></span>
@@ -1216,10 +1439,10 @@ export default function App() {
           </>
         )}
         <p className="nav-label">WORKSPACE</p>
-        <nav>{nav.map(item => <button key={item.label} className={active === item.label ? "nav-item active" : "nav-item"} onClick={() => setActive(item.label)}><Icon name={item.icon} size={17} /><span>{item.label}</span>{item.count && <em>{item.count}</em>}</button>)}</nav>
+        <nav>{nav.map(item => <button key={item.label} title={collapsed ? item.label : undefined} className={active === item.label ? "nav-item active" : "nav-item"} onClick={() => setActive(item.label)}><Icon name={item.icon} size={17} /><span>{item.label}</span>{item.count && <em>{item.count}</em>}</button>)}</nav>
         <p className="nav-label lower">SYSTEM</p>
-        <button className="nav-item" onClick={toggleTheme}><Icon name={dark ? "sun" : "moon"} size={17} /><span>{dark ? "Light Mode" : "Dark Mode"}</span></button>
-        <button className={active === "Settings" ? "nav-item active" : "nav-item"} onClick={() => setActive("Settings")}><Icon name="settings" size={17} /><span>Settings</span></button>
+        <button className="nav-item" title={collapsed ? (dark ? "Light Mode" : "Dark Mode") : undefined} onClick={toggleTheme}><Icon name={dark ? "sun" : "moon"} size={17} /><span>{dark ? "Light Mode" : "Dark Mode"}</span></button>
+        <button className={active === "Settings" ? "nav-item active" : "nav-item"} title={collapsed ? "Settings" : undefined} onClick={() => setActive("Settings")}><Icon name="settings" size={17} /><span>Settings</span></button>
         <div className="sidebar-footer"><span className="online-dot" /><div><b>All systems operational</b><small>Last synced {timeAgo(lastSyncedAt)}</small></div></div>
       </aside>
 
@@ -1239,7 +1462,6 @@ export default function App() {
                 {liveSync === null ? "Live monitoring" : liveSync.enabled ? `Live · ${liveSync.interval}s` : "Live sync paused"}
               </span>
             </button>
-            <button className="avatar">AS</button>
           </div>
         </header>
         <div className="content">
@@ -1258,8 +1480,8 @@ export default function App() {
               <section className="welcome">
                 <div>
                   <p className="eyebrow">{new Date().toLocaleDateString("en-US", { weekday: "long", day: "numeric", month: "long", year: "numeric" }).toUpperCase()} <span className="pulse" /></p>
-                  <h1>{`Good ${new Date().getHours() < 12 ? "morning" : new Date().getHours() < 17 ? "afternoon" : "evening"}, Analyst.`}</h1>
-                  <p className="lede">Here is what your intelligence workspace has surfaced today.</p>
+                  <h1>{`Good ${new Date().getHours() < 12 ? "morning" : new Date().getHours() < 17 ? "afternoon" : "evening"}.`}</h1>
+                  <p className="lede">Detection → Explanation → Attack Reconstruction → Correlation → Collective Intelligence.</p>
                 </div>
                 <div style={{ display: "flex", gap: 10 }}>
                   <button className="scan-button" onClick={() => setConnectOpen(true)} style={{ background: "var(--amber)", color: "#111", border: "none" }}><Icon name="radar" size={17} /> Sync Live Mail</button>
@@ -1349,6 +1571,22 @@ export default function App() {
                       <p style={{ color: "var(--muted)", fontSize: 12 }}>No indicators extracted for this case yet.</p>
                     )}
                   </div>
+                  <GeolocationSection analysis={analysis} />
+                  <ThreatAnalysisSection analysis={analysis} />
+                  <AttackReconstructionSection analysis={analysis} />
+                  <ScenarioSimulationSection analysis={analysis} />
+                  {analysis?.correlation_graph?.nodes?.length > 0 && (
+                    <div className="detail-section">
+                      <div className="subhead">
+                        <b>Threat graph</b>
+                        <span style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                          {analysis.correlation_graph.summary?.total_nodes || 0} nodes · {analysis.correlation_graph.summary?.total_edges || 0} relationships
+                          <button className="text-button" onClick={() => setGraphFull(true)} title="View fullscreen"><Icon name="expand" size={14} /> Fullscreen</button>
+                        </span>
+                      </div>
+                      <CorrelationGraphView graph={analysis.correlation_graph} />
+                    </div>
+                  )}
                 </article>
               )}
               </section>
@@ -1361,6 +1599,19 @@ export default function App() {
       {scanOpen && <ScanModal onClose={() => setScanOpen(false)} onResult={handleScanResult} />}
       {scanResult && <ScanResultModal result={scanResult} onClose={() => setScanResult(null)} onAddCase={addCaseFromScan} />}
       {hackerOpen && <HackerInsightsModal case_={selected} onClose={() => setHackerOpen(false)} />}
+      {graphFull && analysis?.correlation_graph && (
+        <div className="modal-backdrop" style={{ zIndex: 60 }} onClick={() => setGraphFull(false)}>
+          <div className="scan-modal" onClick={e => e.stopPropagation()} style={{ width: "min(1350px,96vw)" }}>
+            <button className="modal-close" onClick={() => setGraphFull(false)} aria-label="Close">×</button>
+            <p className="eyebrow">THREAT GRAPH · FULLSCREEN VIEW</p>
+            <h2>{selected?.subject || "Threat relationships"}</h2>
+            <p style={{ fontSize: 12, color: "var(--muted)", margin: "4px 0 14px" }}>
+              Case {selected?.id} · {analysis.correlation_graph.summary?.total_nodes || 0} nodes · {analysis.correlation_graph.summary?.total_edges || 0} relationships — hover-free static reconstruction of observed indicators
+            </p>
+            <CorrelationGraphView graph={analysis.correlation_graph} height="72vh" />
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -536,3 +536,38 @@ def message_id_seen(message_id: str) -> bool:
             [message_id],
         )
         return cur.fetchone() is not None
+
+
+def find_known_indicators(candidates: list) -> list:
+    """Given [{type, value}], return those already in the intelligence
+    repository with detection counts and the campaigns they appeared in."""
+    if not candidates:
+        return []
+    out = []
+    with get_conn() as conn, conn.cursor(row_factory=dict_row) as cur:
+        for c in candidates:
+            cur.execute(
+                """SELECT type, value, status, detections, vt,
+                          first_seen, last_seen
+                   FROM iocs WHERE value = %s LIMIT 1""",
+                [c["value"]],
+            )
+            row = cur.fetchone()
+            if not row:
+                continue
+            like = f"%{c['value']}%"
+            cur.execute(
+                """SELECT id, name FROM campaigns
+                   WHERE iocs::text ILIKE %s ORDER BY last_seen DESC LIMIT 3""",
+                [like],
+            )
+            camps = [{"id": r["id"], "name": r["name"]} for r in cur.fetchall()]
+            out.append({
+                "type": c["type"], "value": c["value"],
+                "status": row["status"], "detections": row["detections"],
+                "vt": row["vt"],
+                "first_seen": row["first_seen"].isoformat() if row["first_seen"] else None,
+                "last_seen": row["last_seen"].isoformat() if row["last_seen"] else None,
+                "campaigns": camps,
+            })
+    return out
