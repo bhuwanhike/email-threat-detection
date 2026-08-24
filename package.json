@@ -1,4 +1,16 @@
 {
+  "name": "email-threat-detection",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "concurrently -n \"BACKEND,FRONTEND\" -c \"cyan,magenta\" \"npm run dev:backend\" \"npm run dev:frontend\"",
+    "dev:backend": "cd backend/email_threat_service && (.venv/bin/uvicorn main:app --reload --host 0.0.0.0 --port 8000 || uvicorn main:app --reload --host 0.0.0.0 --port 8000)",
+    "dev:frontend": "npm --prefix frontend run dev",
+    "start": "npm run dev"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  },
   "dependencies": {
     "axios": "^1.19.0",
     "leaflet": "^1.9.4",
@@ -9,3 +21,4 @@
     "recharts": "^3.10.1"
   }
 }
+

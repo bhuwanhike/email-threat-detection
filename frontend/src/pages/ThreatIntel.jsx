@@ -1,6 +1,6 @@
 import Icon from "../components/Icon";
 
-const iocs = [
+const defaultIocs = [
   { type: "DOMAIN", value: "micros0ft.com", threat: "Lookalike · BEC", detections: 14, vt: 8, status: "MALICIOUS", accent: "red" },
   { type: "DOMAIN", value: "northstar-holdings.co", threat: "BEC · CEO fraud", detections: 6, vt: 5, status: "MALICIOUS", accent: "red" },
   { type: "DOMAIN", value: "cloud-storage-verify.net", threat: "Phishing kit", detections: 200, vt: 3, status: "SUSPICIOUS", accent: "orange" },
@@ -11,7 +11,7 @@ const iocs = [
   { type: "HASH", value: "d41d8cd98f00b204e9800998ecf8427e", threat: "Macro dropper · Invoice_8831.xlsm", detections: 2, vt: 6, status: "MALICIOUS", accent: "red" },
 ];
 
-const ttps = [
+const defaultTtps = [
   { id: "T1566.001", name: "Spearphishing Attachment", count: 3 },
   { id: "T1566.002", name: "Spearphishing via Link", count: 5 },
   { id: "T1036.005", name: "Match Legitimate Name", count: 4 },
@@ -20,7 +20,10 @@ const ttps = [
   { id: "T1657", name: "Financial Theft (BEC)", count: 2 },
 ];
 
-export default function ThreatIntel() {
+export default function ThreatIntel({ data }) {
+  const iocs = data?.iocs || defaultIocs;
+  const ttps = data?.ttps || defaultTtps;
+
   return (
     <div>
       <section className="welcome" style={{ marginBottom: 28 }}>
@@ -34,7 +37,7 @@ export default function ThreatIntel() {
         <div className="ti-stat-card"><span className="metric-icon coral" style={{ width: 32, height: 32 }}><Icon name="link" size={16} /></span><div><small>MALICIOUS IOCS</small><strong>{iocs.filter(i => i.status === "MALICIOUS").length}</strong></div></div>
         <div className="ti-stat-card"><span className="metric-icon amber" style={{ width: 32, height: 32 }}><Icon name="alert" size={16} /></span><div><small>SUSPICIOUS</small><strong>{iocs.filter(i => i.status === "SUSPICIOUS").length}</strong></div></div>
         <div className="ti-stat-card"><span className="metric-icon blue" style={{ width: 32, height: 32 }}><Icon name="zap" size={16} /></span><div><small>MITRE TTPS</small><strong>{ttps.length}</strong></div></div>
-        <div className="ti-stat-card"><span className="metric-icon mint" style={{ width: 32, height: 32 }}><Icon name="radar" size={16} /></span><div><small>VT DETECTIONS</small><strong>{iocs.reduce((a, i) => a + i.vt, 0)}</strong></div></div>
+        <div className="ti-stat-card"><span className="metric-icon mint" style={{ width: 32, height: 32 }}><Icon name="radar" size={16} /></span><div><small>VT DETECTIONS</small><strong>{iocs.reduce((a, i) => a + (i.vt || 0), 0)}</strong></div></div>
       </div>
       <div className="ti-section-label">INDICATORS OF COMPROMISE</div>
       <div className="queue-table">
