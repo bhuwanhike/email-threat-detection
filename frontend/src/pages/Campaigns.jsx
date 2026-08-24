@@ -1,61 +1,6 @@
 import { useEffect, useState } from "react";
 import Icon from "../components/Icon";
 
-const defaultCampaigns = [
-  {
-    id: "CAMP-INVOICE-01",
-    name: "INVOICE-STORM · Microsoft Lookalike BEC",
-    risk: "CRITICAL",
-    accent: "red",
-    count: 14,
-    iocs: ["micros0ft.com", "micros0ft-billing.com", "185.23.45.10"],
-    first_seen: "18 Aug 2026",
-    last_seen: "24 Aug 2026",
-    ttps: ["T1566.001", "T1036.005", "T1078"],
-    related_case_ids: ["INC-2481"],
-    avg_risk_score: 94,
-  },
-  {
-    id: "CAMP-WIRE-02",
-    name: "CEO-WIRE-01 · Executive Impersonation",
-    risk: "HIGH",
-    accent: "orange",
-    count: 6,
-    iocs: ["northstar-holdings.co", "41.58.120.77"],
-    first_seen: "20 Aug 2026",
-    last_seen: "23 Aug 2026",
-    ttps: ["T1566.002", "T1534", "T1657"],
-    related_case_ids: ["INC-2479"],
-    avg_risk_score: 81,
-  },
-  {
-    id: "CAMP-CLOUD-03",
-    name: "CLOUD-LURE-22 · Commodity Phishing Kit",
-    risk: "MEDIUM",
-    accent: "yellow",
-    count: 200,
-    iocs: ["cloud-storage-verify.net", "cloud-verify-storage.net", "95.216.44.22"],
-    first_seen: "15 Aug 2026",
-    last_seen: "23 Aug 2026",
-    ttps: ["T1566.002", "T1598.003"],
-    related_case_ids: ["INC-2476"],
-    avg_risk_score: 67,
-  },
-  {
-    id: "CAMP-UNCATEGORIZED",
-    name: "Uncategorized / Standalone incidents",
-    risk: "LOW",
-    accent: "green",
-    count: 1,
-    iocs: [],
-    first_seen: "N/A",
-    last_seen: "N/A",
-    ttps: [],
-    related_case_ids: ["INC-2472"],
-    avg_risk_score: 12,
-  },
-];
-
 export default function Campaigns({ campaigns: propCampaigns }) {
   const [data, setData] = useState(propCampaigns || null);
   const [selected, setSelected] = useState(null);
@@ -68,10 +13,10 @@ export default function Campaigns({ campaigns: propCampaigns }) {
     fetch("http://localhost:8000/campaigns")
       .then(r => r.json())
       .then(d => setData(d))
-      .catch(() => setData(defaultCampaigns));
+      .catch(() => setData([]));
   }, [propCampaigns]);
 
-  const list = data || defaultCampaigns;
+  const list = data || [];
 
   const openCase = caseId => {
     setSelected(caseId);
@@ -133,6 +78,12 @@ export default function Campaigns({ campaigns: propCampaigns }) {
       <div className="ti-section-label" style={{ marginTop: 28 }}>
         CAMPAIGN CLUSTERS · Grouped by shared infrastructure / TTPs
       </div>
+
+      {list.length === 0 && (
+        <p style={{ padding: "20px", color: "var(--muted)", fontSize: 12, border: "1px dashed var(--line)", borderRadius: 8 }}>
+          No campaigns detected yet — clusters form automatically when analyzed emails share infrastructure or TTPs.
+        </p>
+      )}
 
       <div style={{ display: "grid", gap: 14, gridTemplateColumns: "repeat(auto-fill, minmax(360px, 1fr))" }}>
         {list.map(c => (

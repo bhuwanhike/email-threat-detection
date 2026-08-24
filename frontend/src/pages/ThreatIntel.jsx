@@ -1,28 +1,8 @@
 import Icon from "../components/Icon";
 
-const defaultIocs = [
-  { type: "DOMAIN", value: "micros0ft.com", threat: "Lookalike · BEC", detections: 14, vt: 8, status: "MALICIOUS", accent: "red" },
-  { type: "DOMAIN", value: "northstar-holdings.co", threat: "BEC · CEO fraud", detections: 6, vt: 5, status: "MALICIOUS", accent: "red" },
-  { type: "DOMAIN", value: "cloud-storage-verify.net", threat: "Phishing kit", detections: 200, vt: 3, status: "SUSPICIOUS", accent: "orange" },
-  { type: "IP", value: "185.23.45.10", threat: "Open relay · Agra IN", detections: 9, vt: 2, status: "SUSPICIOUS", accent: "orange" },
-  { type: "IP", value: "41.58.120.77", threat: "Residential proxy · Lagos NG", detections: 4, vt: 1, status: "SUSPICIOUS", accent: "orange" },
-  { type: "IP", value: "95.216.44.22", threat: "Hetzner VPS · Frankfurt DE", detections: 3, vt: 0, status: "WATCHLIST", accent: "yellow" },
-  { type: "URL", value: "http://secure-example-login.test/verify", threat: "Credential harvesting", detections: 7, vt: 11, status: "MALICIOUS", accent: "red" },
-  { type: "HASH", value: "d41d8cd98f00b204e9800998ecf8427e", threat: "Macro dropper · Invoice_8831.xlsm", detections: 2, vt: 6, status: "MALICIOUS", accent: "red" },
-];
-
-const defaultTtps = [
-  { id: "T1566.001", name: "Spearphishing Attachment", count: 3 },
-  { id: "T1566.002", name: "Spearphishing via Link", count: 5 },
-  { id: "T1036.005", name: "Match Legitimate Name", count: 4 },
-  { id: "T1078", name: "Valid Accounts", count: 2 },
-  { id: "T1534", name: "Internal Spearphishing", count: 1 },
-  { id: "T1657", name: "Financial Theft (BEC)", count: 2 },
-];
-
 export default function ThreatIntel({ data }) {
-  const iocs = data?.iocs || defaultIocs;
-  const ttps = data?.ttps || defaultTtps;
+  const iocs = data?.iocs || [];
+  const ttps = data?.ttps || [];
 
   return (
     <div>
@@ -44,6 +24,7 @@ export default function ThreatIntel({ data }) {
         <div className="queue-head" style={{ gridTemplateColumns: "90px 1fr 1fr 70px 80px 90px" }}>
           <span>TYPE</span><span>VALUE</span><span>THREAT</span><span>HITS</span><span>VT FLAGS</span><span>STATUS</span>
         </div>
+        {iocs.length === 0 && <p style={{ padding: "20px", color: "var(--muted)", fontSize: 12 }}>No indicators of compromise yet — they are aggregated automatically as emails are analyzed.</p>}
         {iocs.map(ioc => (
           <div key={ioc.value} className="queue-row" style={{ gridTemplateColumns: "90px 1fr 1fr 70px 80px 90px" }}>
             <span><span className="ioc-type-badge">{ioc.type}</span></span>
@@ -55,16 +36,20 @@ export default function ThreatIntel({ data }) {
           </div>
         ))}
       </div>
-      <div className="ti-section-label" style={{ marginTop: 28 }}>MITRE ATT&CK TECHNIQUES OBSERVED</div>
-      <div className="ttp-grid">
-        {ttps.map(t => (
-          <div key={t.id} className="ttp-card">
-            <span className="hi-ttp-id" style={{ fontSize: 9 }}>{t.id}</span>
-            <b>{t.name}</b>
-            <span>{t.count} case{t.count > 1 ? "s" : ""}</span>
+      {ttps.length > 0 && (
+        <>
+          <div className="ti-section-label" style={{ marginTop: 28 }}>MITRE ATT&CK TECHNIQUES OBSERVED</div>
+          <div className="ttp-grid">
+            {ttps.map(t => (
+              <div key={t.id} className="ttp-card">
+                <span className="hi-ttp-id" style={{ fontSize: 9 }}>{t.id}</span>
+                <b>{t.name}</b>
+                <span>{t.count} case{t.count > 1 ? "s" : ""}</span>
+              </div>
+            ))}
           </div>
-        ))}
-      </div>
+        </>
+      )}
     </div>
   );
 }
