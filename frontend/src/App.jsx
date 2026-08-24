@@ -55,9 +55,9 @@ function HackerInsightsModal({ case_, analysisOverride, onClose }) {
         <div className="hacker-modal" onClick={e => e.stopPropagation()}>
           <button type="button" className="modal-close" onClick={onClose}>✕</button>
           {error ? (
-            <p style={{ color: "var(--muted)", fontSize: 12 }}>No forensic analysis is stored for this case yet.</p>
+            <p style={{ color: "var(--muted)", fontSize: 13 }}>No forensic analysis is stored for this case yet.</p>
           ) : (
-            <p style={{ color: "var(--muted)", fontSize: 12 }}><span className="scan-spinner" style={{ width: 14, height: 14, display: "inline-block", verticalAlign: "middle", marginRight: 8 }} />Loading adversary intelligence…</p>
+            <p style={{ color: "var(--muted)", fontSize: 13 }}><span className="scan-spinner" style={{ width: 14, height: 14, display: "inline-block", verticalAlign: "middle", marginRight: 8 }} />Loading adversary intelligence…</p>
           )}
         </div>
       </div>
@@ -66,7 +66,7 @@ function HackerInsightsModal({ case_, analysisOverride, onClose }) {
 
   const origin = analysis.origin_attribution || {};
   const camp = analysis.campaign || {};
-  const geo = (analysis.geo || []).find(g => g.lat !== 0);
+  const geo = (analysis.geo || []).find(g => g.lat !== 0 || (g.city && g.city !== "Unknown" && g.city !== "Private"));
   const graph = analysis.correlation_graph;
   const displaySpoof = analysis.display_name_spoofing || {};
   const ev = analysis.evidence_hash || {};
@@ -114,7 +114,7 @@ function HackerInsightsModal({ case_, analysisOverride, onClose }) {
             <span className="hi-sub">{dash(origin.origin_label || originText)}</span>
             <span className="hi-sub muted">{geo?.org || "—"}</span>
             {origin.origin_type && (
-              <span className="hi-sub" style={{ marginTop: 4, fontSize: 9 }}>
+              <span className="hi-sub" style={{ marginTop: 4, fontSize: 10 }}>
                 origin type: <b>{origin.origin_type.replace(/_/g, " ")}</b>
               </span>
             )}
@@ -134,7 +134,7 @@ function HackerInsightsModal({ case_, analysisOverride, onClose }) {
         {!origin_reasons.length && !ttps.length && !infra.length && !evasion.length && (
           <div className="hi-section">
             <p className="hi-section-label"><Icon name="shield" size={12} /> ADVERSARY INTELLIGENCE</p>
-            <p style={{ fontSize: 10, color: "var(--muted)" }}>No adversary intelligence available for this case yet.</p>
+            <p style={{ fontSize: 11, color: "var(--muted)" }}>No adversary intelligence available for this case yet.</p>
           </div>
         )}
 
@@ -149,7 +149,7 @@ function HackerInsightsModal({ case_, analysisOverride, onClose }) {
           <div className="hi-section">
             <p className="hi-section-label">
               <Icon name="target" size={12} /> CORRELATION GRAPH
-              <span style={{ float: "right", fontSize: 9, color: "var(--muted)", fontWeight: 500 }}>
+              <span style={{ float: "right", fontSize: 10, color: "var(--muted)", fontWeight: 500 }}>
                 {graph.summary?.total_nodes || 0} nodes · {graph.summary?.total_edges || 0} edges
               </span>
             </p>
@@ -164,7 +164,7 @@ function HackerInsightsModal({ case_, analysisOverride, onClose }) {
         {ev.sha256 && (
           <div className="hi-section">
             <p className="hi-section-label"><Icon name="hash" size={12} /> EVIDENCE CHAIN</p>
-            <div style={{ fontFamily: "'Space Mono',monospace", fontSize: 9, wordBreak: "break-all", color: "var(--ink)", lineHeight: 1.6 }}>
+            <div style={{ fontFamily: "'Space Mono',monospace", fontSize: 10, wordBreak: "break-all", color: "var(--ink)", lineHeight: 1.6 }}>
               SHA-256: <b>{ev.sha256}</b><br />
               size: {dash(ev.size_bytes)} bytes · preserved: {ev.preserved_at || analysis.analyzed_at || "—"}
             </div>
@@ -292,10 +292,10 @@ function downloadReport(result) {
     (result.hops || []).length === 0 ? "  (no Received headers)" : "",
     "",
     "── GEOLOCATION ────────────────────────────────────────────────",
-    ...(result.geo || []).filter(g => g.lat !== 0).map(g =>
+    ...(result.geo || []).filter(g => g.lat !== 0 || (g.city && g.city !== "Unknown" && g.city !== "Private")).map(g =>
       `${g.ip} → ${g.city}, ${g.region}, ${g.country} | ${g.org}${g.vpn ? " | ⚠ VPN/HOSTING" : ""}${g.tor ? " | ⚠⚠ TOR EXIT NODE" : ""}`
     ),
-    (result.geo || []).filter(g => g.lat !== 0).length === 0 ? "  (no geolocatable public IPs)" : "",
+    (result.geo || []).filter(g => g.lat !== 0 || (g.city && g.city !== "Unknown" && g.city !== "Private")).length === 0 ? "  (no geolocatable public IPs)" : "",
     "",
     "── DOMAIN INFRASTRUCTURE INTEL ────────────────────────────────",
     "—— WHOIS ——",
@@ -418,7 +418,7 @@ function CorrelationGraphView({ graph }) {
       </svg>
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 6 }}>
         {Object.entries(typeColors).map(([t, c]) => (
-          <span key={t} style={{ fontSize: 9, display: "flex", alignItems: "center", gap: 4 }}>
+          <span key={t} style={{ fontSize: 10, display: "flex", alignItems: "center", gap: 4 }}>
             <span style={{ width: 8, height: 8, borderRadius: "50%", background: c, display: "inline-block" }} />{t}
           </span>
         ))}
@@ -428,7 +428,7 @@ function CorrelationGraphView({ graph }) {
 }
 
 function ScanResultModal({ result, onClose, onAddCase }) {
-  const geoPoints = (result.geo || []).filter(g => g.lat !== 0);
+  const geoPoints = (result.geo || []).filter(g => g.lat !== 0 || (g.city && g.city !== "Unknown" && g.city !== "Private"));
   const becKeys = Object.keys(result.bec || {});
   const dangerousAttachments = (result.attachments || []).filter(a => a.dangerous);
   const origin = result.origin_attribution || {};
@@ -461,17 +461,17 @@ function ScanResultModal({ result, onClose, onAddCase }) {
           <div className="sr-grid">
             <div className="sr-card">
               <p className="hi-card-label"><Icon name="target" size={12} /> ORIGIN ATTRIBUTION</p>
-              <div style={{ fontSize: 11, fontWeight: 700, color: origin.origin_type === "spoofed_domain" ? "var(--coral)" : "var(--ink)" }}>
+              <div style={{ fontSize: 12, fontWeight: 700, color: origin.origin_type === "spoofed_domain" ? "var(--coral)" : "var(--ink)" }}>
                 {origin.origin_label || "Determining…"}
               </div>
-              <div style={{ fontSize: 9, color: "var(--muted)", marginTop: 2 }}>
+              <div style={{ fontSize: 10, color: "var(--muted)", marginTop: 2 }}>
                 Confidence {origin.confidence || 0}% · {originIp.source || ""}{originIp.ip ? ` · ${originIp.ip}` : ""}
               </div>
               {origin.scores && (
                 <div style={{ display: "flex", gap: 4, marginTop: 6, flexWrap: "wrap" }}>
                   {Object.entries(origin.scores).map(([k, v]) => (
                     <span key={k} style={{
-                      fontSize: 8, padding: "2px 4px", background: "var(--line)",
+                      fontSize: 9, padding: "2px 4px", background: "var(--line)",
                       borderRadius: 3, fontWeight: 600, color: v > 0 ? "var(--ink)" : "var(--muted)"
                     }}>
                       {k.split("_")[0]}:{v}
@@ -484,16 +484,16 @@ function ScanResultModal({ result, onClose, onAddCase }) {
               <p className="hi-card-label"><Icon name="shield" size={12} /> EVIDENCE INTEGRITY · CHAIN OF CUSTODY</p>
               {ev.sha256 ? (
                 <>
-                  <div style={{ fontFamily: "'Space Mono',monospace", fontSize: 8, wordBreak: "break-all", color: "var(--ink)", lineHeight: 1.4 }}>
+                  <div style={{ fontFamily: "'Space Mono',monospace", fontSize: 9, wordBreak: "break-all", color: "var(--ink)", lineHeight: 1.4 }}>
                     <b>SHA-256</b>: {ev.sha256.slice(0, 32)}…<br />
                     <b>size</b>: {ev.size_bytes || 0} bytes · <b>retention</b>: {result.retention_days || 90}d
                   </div>
                   {result.mask_pii_applied && (
-                    <div style={{ marginTop: 4, fontSize: 9, color: "var(--mint)", fontWeight: 700 }}>✓ PII masking applied (GDPR/DPDP)</div>
+                    <div style={{ marginTop: 4, fontSize: 10, color: "var(--mint)", fontWeight: 700 }}>✓ PII masking applied (GDPR/DPDP)</div>
                   )}
                 </>
               ) : (
-                <span style={{ fontSize: 9, color: "var(--muted)" }}>Hash computed server-side in audit log</span>
+                <span style={{ fontSize: 10, color: "var(--muted)" }}>Hash computed server-side in audit log</span>
               )}
             </div>
           </div>
@@ -503,12 +503,12 @@ function ScanResultModal({ result, onClose, onAddCase }) {
           <div className="sr-section">
             <p className="hi-section-label"><Icon name="zap" size={12} /> CAMPAIGN CORRELATION</p>
             <div style={{ padding: 10, borderRadius: 6, background: camp.matched ? "rgba(233,104,86,0.06)" : "var(--bg-card)", border: `1px solid var(--line)`, borderLeft: `4px solid var(--${camp.campaign_accent || "yellow"})` }}>
-              <div style={{ fontSize: 10, fontWeight: 700, color: "var(--ink)" }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: "var(--ink)" }}>
                 <span className="ioc-type-badge" style={{ marginRight: 6 }}>{(camp.campaign_id || "").split("-")[1] || "CAMP"}</span>
                 {camp.campaign_name}
                 {camp.matched && <span style={{ color: "var(--coral)", marginLeft: 8 }}>⚠ KNOWN CAMPAIGN</span>}
               </div>
-              <div style={{ fontSize: 9, color: "var(--muted)", marginTop: 4 }}>
+              <div style={{ fontSize: 10, color: "var(--muted)", marginTop: 4 }}>
                 ~{camp.similar_emails_in_campaign || 1} related emails · {camp.campaign_window || "first seen today"}
               </div>
             </div>
@@ -520,25 +520,25 @@ function ScanResultModal({ result, onClose, onAddCase }) {
             {["spf","dkim","dmarc"].map(k => <div key={k} className="sr-auth-row"><span className="ioc-type-badge">{k.toUpperCase()}</span><span className={`auth-val ${result.auth?.[k] === "pass" ? "pass" : "fail"}`}>{result.auth?.[k] || "unknown"}</span></div>)}
           </div>
           <div className="sr-card"><p className="hi-card-label"><Icon name="alert" size={12} /> FLAGS TRIGGERED</p>
-            {(result.flags || []).length === 0 ? <span style={{ fontSize: 10, color: "var(--muted)" }}>No flags</span> : (result.flags || []).slice(0, 8).map(f => <div key={f} className="sr-flag">{f}</div>)}
-            {(result.flags || []).length > 8 && <div style={{ fontSize: 9, color: "var(--muted)" }}>+{(result.flags || []).length - 8} more</div>}
+            {(result.flags || []).length === 0 ? <span style={{ fontSize: 11, color: "var(--muted)" }}>No flags</span> : (result.flags || []).slice(0, 8).map(f => <div key={f} className="sr-flag">{f}</div>)}
+            {(result.flags || []).length > 8 && <div style={{ fontSize: 10, color: "var(--muted)" }}>+{(result.flags || []).length - 8} more</div>}
           </div>
         </div>
 
         {spoof.is_spoofed && (
           <div className="sr-section"><p className="hi-section-label"><Icon name="eye" size={12} /> ⚠ DISPLAY-NAME SPOOFING DETECTED</p>
-            {spoof.techniques?.map((t, i) => <div key={i} className="sr-hop"><span className="ioc-type-badge danger">SPOOF</span><span style={{ fontSize: 9, color: "var(--coral)" }}>{t}</span></div>)}
+            {spoof.techniques?.map((t, i) => <div key={i} className="sr-hop"><span className="ioc-type-badge danger">SPOOF</span><span style={{ fontSize: 10, color: "var(--coral)" }}>{t}</span></div>)}
           </div>
         )}
 
         {becKeys.length > 0 && (
           <div className="sr-section"><p className="hi-section-label"><Icon name="zap" size={12} /> BEC PATTERNS DETECTED</p>
-            {becKeys.map(k => <div key={k} className="sr-hop"><span className="ioc-type-badge danger">{k.replace(/_/g, " ").toUpperCase()}</span><span style={{ fontSize: 9, color: "var(--coral)" }}>{result.bec[k].join(" · ")}</span></div>)}
+            {becKeys.map(k => <div key={k} className="sr-hop"><span className="ioc-type-badge danger">{k.replace(/_/g, " ").toUpperCase()}</span><span style={{ fontSize: 10, color: "var(--coral)" }}>{result.bec[k].join(" · ")}</span></div>)}
           </div>
         )}
         {dangerousAttachments.length > 0 && (
           <div className="sr-section"><p className="hi-section-label"><Icon name="file" size={12} /> DANGEROUS ATTACHMENTS</p>
-            {dangerousAttachments.map(a => <div key={a.filename} className="sr-hop"><span className="ioc-type-badge danger">{a.extension.toUpperCase()}</span><span style={{ fontSize: 10, color: "var(--coral)" }}>{a.filename}</span></div>)}
+            {dangerousAttachments.map(a => <div key={a.filename} className="sr-hop"><span className="ioc-type-badge danger">{a.extension.toUpperCase()}</span><span style={{ fontSize: 11, color: "var(--coral)" }}>{a.filename}</span></div>)}
           </div>
         )}
 
@@ -546,8 +546,8 @@ function ScanResultModal({ result, onClose, onAddCase }) {
           {(result.hops || []).length > 0 && (
             <div className="sr-card">
               <p className="hi-card-label"><Icon name="server" size={12} /> RELAY HOPS ({result.hops.length})</p>
-              {result.hops.slice(0, 4).map((h, i) => <div key={i} className="sr-hop" style={{ margin: "3px 0" }}><span className="ioc-type-badge" style={{ fontSize: 8 }}>HOP {i + 1}</span><span style={{ fontFamily: "'Space Mono',monospace", fontSize: 8 }}>{(h.host || "").slice(0, 28)} {h.ip ? `[${h.ip}]` : ""}</span></div>)}
-              {result.hops.length > 4 && <div style={{ fontSize: 8, color: "var(--muted)" }}>+{result.hops.length - 4} more</div>}
+              {result.hops.slice(0, 4).map((h, i) => <div key={i} className="sr-hop" style={{ margin: "3px 0" }}><span className="ioc-type-badge" style={{ fontSize: 9 }}>HOP {i + 1}</span><span style={{ fontFamily: "'Space Mono',monospace", fontSize: 9 }}>{(h.host || "").slice(0, 28)} {h.ip ? `[${h.ip}]` : ""}</span></div>)}
+              {result.hops.length > 4 && <div style={{ fontSize: 9, color: "var(--muted)" }}>+{result.hops.length - 4} more</div>}
             </div>
           )}
           {geoPoints.length > 0 && (
@@ -555,8 +555,8 @@ function ScanResultModal({ result, onClose, onAddCase }) {
               <p className="hi-card-label"><Icon name="map" size={12} /> GEOLOCATION ({geoPoints.length})</p>
               {geoPoints.slice(0, 3).map(g => (
                 <div key={g.ip} className="sr-hop" style={{ margin: "3px 0" }}>
-                  <span className={`ioc-type-badge ${g.tor ? "danger" : g.vpn ? "" : ""}`} style={{ fontSize: 8 }}>{g.tor ? "TOR" : g.vpn ? "VPN" : "IP"}</span>
-                  <span style={{ fontSize: 8 }}>{g.ip?.slice(0, 15)} · {g.city}, {g.country}{g.tor && " ⚠"}</span>
+                  <span className={`ioc-type-badge ${g.tor ? "danger" : g.vpn ? "" : ""}`} style={{ fontSize: 9 }}>{g.tor ? "TOR" : g.vpn ? "VPN" : "IP"}</span>
+                  <span style={{ fontSize: 9 }}>{g.ip?.slice(0, 15)} · {g.city}, {g.country}{g.tor && " ⚠"}</span>
                 </div>
               ))}
             </div>
@@ -569,8 +569,8 @@ function ScanResultModal({ result, onClose, onAddCase }) {
               <div key={i} className="sr-hop">
                 <span className="ioc-type-badge danger">OBFUSCATED</span>
                 <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontFamily: "'Space Mono',monospace", fontSize: 8, wordBreak: "break-all" }}>{u.url}</div>
-                  <div style={{ fontSize: 8, color: "var(--coral)" }}>{(u.techniques || []).join(" · ")}</div>
+                  <div style={{ fontFamily: "'Space Mono',monospace", fontSize: 9, wordBreak: "break-all" }}>{u.url}</div>
+                  <div style={{ fontSize: 9, color: "var(--coral)" }}>{(u.techniques || []).join(" · ")}</div>
                 </div>
               </div>
             ))}
@@ -579,26 +579,26 @@ function ScanResultModal({ result, onClose, onAddCase }) {
 
         {(result.urls || []).length > 0 && urlAnalysis.length > 0 && obfuscatedUrls.length === 0 && (
           <div className="sr-section"><p className="hi-section-label"><Icon name="link" size={12} /> URLS FOUND</p>
-            {result.urls.slice(0, 4).map((u, i) => <div key={i} className="sr-hop"><span className="ioc-type-badge">URL</span><span style={{ fontFamily: "'Space Mono',monospace", fontSize: 8, wordBreak: "break-all" }}>{u.slice(0, 70)}{u.length > 70 ? "…" : ""}</span></div>)}
+            {result.urls.slice(0, 4).map((u, i) => <div key={i} className="sr-hop"><span className="ioc-type-badge">URL</span><span style={{ fontFamily: "'Space Mono',monospace", fontSize: 9, wordBreak: "break-all" }}>{u.slice(0, 70)}{u.length > 70 ? "…" : ""}</span></div>)}
           </div>
         )}
 
         {result.dns && (
           <div className="sr-section"><p className="hi-section-label"><Icon name="globe" size={12} /> DNS + WHOIS</p>
-            <div className="sr-hop"><span className="ioc-type-badge">MX</span><span style={{ fontSize: 9 }}>{(result.dns.mx || []).slice(0, 2).join(", ") || "None"}{result.dns.suspicious && <span style={{ color: "var(--coral)", marginLeft: 6 }}>⚠ No MX (spoofed)</span>}</span></div>
-            {result.whois?.domain && <div className="sr-hop"><span className="ioc-type-badge">REG</span><span style={{ fontSize: 9 }}>{result.whois.registrar?.slice(0, 30) || "—"} · {result.whois.creation_date}{result.whois.age_days != null ? ` (${result.whois.age_days}d old)` : ""}</span></div>}
+            <div className="sr-hop"><span className="ioc-type-badge">MX</span><span style={{ fontSize: 10 }}>{(result.dns.mx || []).slice(0, 2).join(", ") || "None"}{result.dns.suspicious && <span style={{ color: "var(--coral)", marginLeft: 6 }}>⚠ No MX (spoofed)</span>}</span></div>
+            {result.whois?.domain && <div className="sr-hop"><span className="ioc-type-badge">REG</span><span style={{ fontSize: 10 }}>{result.whois.registrar?.slice(0, 30) || "—"} · {result.whois.creation_date}{result.whois.age_days != null ? ` (${result.whois.age_days}d old)` : ""}</span></div>}
           </div>
         )}
         {result.vt_domain?.domain && (
           <div className="sr-section"><p className="hi-section-label"><Icon name="radar" size={12} /> VIRUSTOTAL</p>
-            <div className="sr-hop"><span className={`ioc-type-badge ${result.vt_domain.malicious > 0 ? "danger" : ""}`}>VT</span><span style={{ fontSize: 9 }}>{result.vt_domain.malicious} malicious · {result.vt_domain.suspicious} suspicious · {result.vt_domain.total} engines</span></div>
+            <div className="sr-hop"><span className={`ioc-type-badge ${result.vt_domain.malicious > 0 ? "danger" : ""}`}>VT</span><span style={{ fontSize: 10 }}>{result.vt_domain.malicious} malicious · {result.vt_domain.suspicious} suspicious · {result.vt_domain.total} engines</span></div>
           </div>
         )}
 
         {result.correlation_graph?.nodes?.length > 0 && (
           <div className="sr-section">
             <p className="hi-section-label"><Icon name="target" size={12} /> IDENTITY CORRELATION GRAPH</p>
-            <div style={{ fontSize: 9, color: "var(--muted)", marginBottom: 4 }}>
+            <div style={{ fontSize: 10, color: "var(--muted)", marginBottom: 4 }}>
               {result.correlation_graph.summary?.total_nodes || 0} nodes · {result.correlation_graph.summary?.total_edges || 0} edges
             </div>
             <CorrelationGraphView graph={result.correlation_graph} />
@@ -615,7 +615,7 @@ function ScanResultModal({ result, onClose, onAddCase }) {
   );
 }
 
-function ConnectAccountModal({ onClose, onCasesFetched, setNotice }) {
+function ConnectAccountModal({ onClose, onCasesFetched, setNotice, onSynced }) {
   const [provider, setProvider] = useState("gmail");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -644,6 +644,7 @@ function ConnectAccountModal({ onClose, onCasesFetched, setNotice }) {
             clearInterval(intervalId);
             setMsPolling(false);
             setStep(`Analyzed ${data.count} live Outlook emails!`);
+            if (onSynced) onSynced();
             if (data.cases && data.cases.length > 0) {
               onCasesFetched(data.count, "outlook", data.account_email || email || "Outlook Account");
             } else {
@@ -715,6 +716,7 @@ function ConnectAccountModal({ onClose, onCasesFetched, setNotice }) {
 
       const data = await res.json();
       setStep(`Analyzed ${data.count} incoming emails!`);
+      if (onSynced) onSynced();
       if (data.cases && data.cases.length > 0) {
         onCasesFetched(data.count, provider, targetEmail);
       } else {
@@ -730,11 +732,11 @@ function ConnectAccountModal({ onClose, onCasesFetched, setNotice }) {
 
   return (
     <div className="modal-backdrop" onClick={onClose}>
-      <form className="scan-modal" onSubmit={handleSync} onClick={e => e.stopPropagation()} style={{ maxWidth: 540 }}>
+      <form className="scan-modal" onSubmit={handleSync} onClick={e => e.stopPropagation()} style={{ maxWidth: 500 }}>
         <button type="button" className="modal-close" onClick={onClose}>✕</button>
         <p className="eyebrow">LIVE EMAIL INTEGRATION</p>
         <h2>Connect Gmail or Outlook</h2>
-        <p style={{ fontSize: 12, color: "var(--muted)", marginBottom: 12 }}>Sync unread incoming emails directly from your inbox for automated forensic threat analysis.</p>
+        <p style={{ fontSize: 13, color: "var(--muted)", marginBottom: 12 }}>Sync unread incoming emails directly from your inbox for automated forensic threat analysis.</p>
 
         <div style={{ display: "flex", gap: 10, marginBottom: 14 }}>
           <button
@@ -760,9 +762,9 @@ function ConnectAccountModal({ onClose, onCasesFetched, setNotice }) {
             <div style={{ background: "rgba(0, 120, 212, 0.08)", border: "1px solid rgba(0, 120, 212, 0.3)", borderRadius: 8, padding: 14 }}>
               <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
                 <Icon name="shield" size={18} />
-                <b style={{ color: "#0078D4", fontSize: 13 }}>Microsoft Official OAuth2 Sign-In</b>
+                <b style={{ color: "#0078D4", fontSize: 14 }}>Microsoft Official OAuth2 Sign-In</b>
               </div>
-              <p style={{ fontSize: 11, color: "var(--ink)", lineHeight: 1.5, margin: 0 }}>
+              <p style={{ fontSize: 12, color: "var(--ink)", lineHeight: 1.5, margin: 0 }}>
                 Microsoft requires OAuth2 authentication for live Outlook inboxes. Click below to sign in safely via Microsoft's official login page.
               </p>
               
@@ -771,7 +773,7 @@ function ConnectAccountModal({ onClose, onCasesFetched, setNotice }) {
                   type="button"
                   onClick={handleStartMsOAuth}
                   disabled={loading}
-                  style={{ width: "100%", marginTop: 12, padding: "10px 14px", background: "#0078D4", color: "#fff", border: "none", borderRadius: 6, fontWeight: 700, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 8, fontSize: 13 }}
+                  style={{ width: "100%", marginTop: 12, padding: "10px 14px", background: "#0078D4", color: "#fff", border: "none", borderRadius: 6, fontWeight: 700, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 8, fontSize: 14 }}
                 >
                   <Icon name="radar" size={16} /> Sign in &amp; Sync Live Outlook Emails
                 </button>
@@ -779,7 +781,7 @@ function ConnectAccountModal({ onClose, onCasesFetched, setNotice }) {
                 <div style={{ marginTop: 12, padding: 14, background: "var(--bg-card)", border: "1px solid var(--line)", borderRadius: 8 }}>
                   <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
                     <div>
-                      <span style={{ fontSize: 11, fontWeight: 700, color: "var(--amber)", textTransform: "uppercase", letterSpacing: 0.5 }}>Step 1: Copy Authentication Code</span>
+                      <span style={{ fontSize: 12, fontWeight: 700, color: "var(--amber)", textTransform: "uppercase", letterSpacing: 0.5 }}>Step 1: Copy Authentication Code</span>
                       <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 6 }}>
                         <div style={{ fontSize: 20, fontWeight: 800, letterSpacing: 3, color: "var(--amber)", padding: "8px 12px", background: "rgba(255,180,0,0.12)", border: "1px dashed var(--amber)", borderRadius: 6, flex: 1, textAlign: "center" }}>
                           {msDevice.user_code}
@@ -791,7 +793,7 @@ function ConnectAccountModal({ onClose, onCasesFetched, setNotice }) {
                             setCodeCopied(true);
                             setTimeout(() => setCodeCopied(false), 2500);
                           }}
-                          style={{ padding: "8px 14px", background: codeCopied ? "var(--mint)" : "var(--accent)", color: "#fff", border: "none", borderRadius: 6, fontWeight: 700, cursor: "pointer", fontSize: 12, display: "flex", alignItems: "center", gap: 6, transition: "all 0.2s ease" }}
+                          style={{ padding: "8px 14px", background: codeCopied ? "var(--mint)" : "var(--accent)", color: "#fff", border: "none", borderRadius: 6, fontWeight: 700, cursor: "pointer", fontSize: 13, display: "flex", alignItems: "center", gap: 6, transition: "all 0.2s ease" }}
                         >
                           <Icon name={codeCopied ? "check" : "copy"} size={15} />
                           {codeCopied ? "Copied!" : "Copy Code"}
@@ -800,26 +802,26 @@ function ConnectAccountModal({ onClose, onCasesFetched, setNotice }) {
                     </div>
 
                     <div>
-                      <span style={{ fontSize: 11, fontWeight: 700, color: "var(--accent)", textTransform: "uppercase", letterSpacing: 0.5 }}>Step 2: Navigate to Microsoft Login</span>
-                      <p style={{ fontSize: 11, color: "var(--muted)", margin: "4px 0 8px 0" }}>
+                      <span style={{ fontSize: 12, fontWeight: 700, color: "var(--accent)", textTransform: "uppercase", letterSpacing: 0.5 }}>Step 2: Navigate to Microsoft Login</span>
+                      <p style={{ fontSize: 12, color: "var(--muted)", margin: "4px 0 8px 0" }}>
                         Click the button below to open Microsoft's official login page in a new tab:
                       </p>
                       <a
                         href={msDevice.verification_uri}
                         target="_blank"
                         rel="noreferrer"
-                        style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8, background: "#0078D4", color: "#fff", padding: "10px 16px", borderRadius: 6, textDecoration: "none", fontSize: 13, fontWeight: 700 }}
+                        style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8, background: "#0078D4", color: "#fff", padding: "10px 16px", borderRadius: 6, textDecoration: "none", fontSize: 14, fontWeight: 700 }}
                       >
                         <Icon name="link" size={15} /> Open {msDevice.verification_uri} ↗
                       </a>
                     </div>
 
                     <div style={{ padding: "10px 12px", background: "rgba(255,255,255,0.03)", borderRadius: 6, border: "1px solid var(--line)" }}>
-                      <p style={{ fontSize: 11, color: "var(--ink)", margin: 0, fontWeight: 600, display: "flex", alignItems: "center", gap: 6 }}>
+                      <p style={{ fontSize: 12, color: "var(--ink)", margin: 0, fontWeight: 600, display: "flex", alignItems: "center", gap: 6 }}>
                         <span className="scan-spinner" style={{ width: 14, height: 14 }} />
                         Step 3 &amp; 4: Enter Code &amp; Approve
                       </p>
-                      <p style={{ fontSize: 10, color: "var(--muted)", margin: "4px 0 0 0", lineHeight: 1.4 }}>
+                      <p style={{ fontSize: 11, color: "var(--muted)", margin: "4px 0 0 0", lineHeight: 1.4 }}>
                         Paste code <b>{msDevice.user_code}</b> on Microsoft's page and click <b>Approve</b>. MailShield is listening in real-time and will automatically import your live unread Outlook emails as soon as approved!
                       </p>
                     </div>
@@ -828,7 +830,7 @@ function ConnectAccountModal({ onClose, onCasesFetched, setNotice }) {
               )}
             </div>
 
-            <details style={{ fontSize: 11, color: "var(--muted)" }}>
+            <details style={{ fontSize: 12, color: "var(--muted)" }}>
               <summary style={{ cursor: "pointer", color: "var(--ink)", fontWeight: 600 }}>Or connect via custom IMAP password</summary>
               <div style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: 10 }}>
                 <input
@@ -869,7 +871,7 @@ function ConnectAccountModal({ onClose, onCasesFetched, setNotice }) {
               style={{ width: "100%", padding: "10px 12px", background: "var(--bg-card)", border: "1px solid var(--line)", borderRadius: 6, color: "var(--ink)" }}
             />
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
-              <span style={{ fontSize: 11, color: "var(--muted)" }}>Max emails to fetch:</span>
+              <span style={{ fontSize: 12, color: "var(--muted)" }}>Max emails to fetch:</span>
               <select
                 value={maxEmails}
                 onChange={e => setMaxEmails(e.target.value)}
@@ -882,13 +884,34 @@ function ConnectAccountModal({ onClose, onCasesFetched, setNotice }) {
               </select>
             </div>
 
-            <div style={{ background: "rgba(255,255,255,0.03)", padding: 12, borderRadius: 6, border: "1px solid var(--line)", marginTop: 8, fontSize: 11, color: "var(--muted)" }}>
-              <b style={{ color: "var(--amber)" }}>🔑 Gmail Authentication Requirement:</b>
-              <ol style={{ paddingLeft: 16, margin: "6px 0 0 0", lineHeight: 1.5 }}>
-                <li>Enable 2-Step Verification on your Google Account.</li>
-                <li>Go to <a href="https://myaccount.google.com/apppasswords" target="_blank" rel="noreferrer" style={{ color: "var(--coral)", textDecoration: "underline" }}>myaccount.google.com/apppasswords</a></li>
-                <li>Generate a 16-character <b>App Password</b> and paste it above.</li>
-              </ol>
+            <div style={{ background: "rgba(234,104,86,0.06)", padding: 14, borderRadius: 8, border: "1px solid rgba(234,104,86,0.25)", marginTop: 8 }}>
+              <b style={{ fontSize: 13, display: "flex", alignItems: "center", gap: 6 }}><Icon name="shield" size={15} /> How to connect your Gmail inbox</b>
+              <p style={{ fontSize: 11.5, color: "var(--muted)", margin: "6px 0 10px 0", lineHeight: 1.45 }}>
+                Google blocks normal passwords for mail apps. You must create a one-time <b>App Password</b> — takes about a minute:
+              </p>
+              {[
+                { n: 1, txt: <>Turn on <b>2-Step Verification</b> at <a href="https://myaccount.google.com/security" target="_blank" rel="noreferrer" style={{ color: "var(--coral)", textDecoration: "underline" }}>myaccount.google.com/security</a> (required before Google will show the App Passwords page).</> },
+                { n: 2, txt: <>Open Google's <b>App Passwords</b> page — click the button below and sign in if asked.</>, link: "https://myaccount.google.com/apppasswords", label: "Open myaccount.google.com/apppasswords" },
+                { n: 3, txt: <>Click <b>Create</b>, name it <b>MailShield</b> and pick any device type. Google generates a <b>16-character code</b> (shown as <span style={{ fontFamily: "'Space Mono',monospace" }}>xxxx xxxx xxxx xxxx</span>).</> },
+                { n: 4, txt: <>Copy that code and paste it into the <b>App Password field above without spaces</b>. Enter your full Gmail address in the first field.</> },
+                { n: 5, txt: <>Hit <b>Sync Live Emails</b> — MailShield connects securely over <span style={{ fontFamily: "'Space Mono',monospace" }}>imap.gmail.com:993</span>, pulls your latest unread mail and runs every message through the analysis pipeline.</> },
+              ].map((st, i) => (
+                <div key={i} style={{ display: "flex", gap: 10, alignItems: "flex-start", marginBottom: i === 4 ? 0 : 8 }}>
+                  <span style={{ flexShrink: 0, width: 20, height: 20, borderRadius: "50%", background: "var(--coral)", color: "#fff", fontSize: 11, fontWeight: 800, display: "inline-flex", alignItems: "center", justifyContent: "center", marginTop: 1 }}>{st.n}</span>
+                  <div style={{ fontSize: 12, lineHeight: 1.45 }}>
+                    {st.txt}
+                    {st.link && (
+                      <a href={st.link} target="_blank" rel="noreferrer" style={{ display: "inline-flex", alignItems: "center", gap: 6, marginTop: 6, background: "#1a73e8", color: "#fff", padding: "7px 12px", borderRadius: 6, textDecoration: "none", fontWeight: 700, fontSize: 12 }}>
+                        <Icon name="link" size={13} /> {st.label} ↗
+                      </a>
+                    )}
+                  </div>
+                </div>
+              ))}
+              <div style={{ marginTop: 10, padding: "8px 10px", background: "rgba(255,180,0,0.08)", border: "1px dashed var(--amber)", borderRadius: 6, fontSize: 11, color: "var(--muted)", display: "flex", gap: 6, alignItems: "flex-start" }}>
+                <Icon name="alert" size={13} />
+                <span><b style={{ color: "var(--amber)" }}>Security note:</b> the App Password only grants mailbox read access and can be revoked anytime from the same Google page. It is never stored by MailShield — it is used once per sync session.</span>
+              </div>
             </div>
           </div>
         )}
@@ -914,6 +937,8 @@ function ConnectAccountModal({ onClose, onCasesFetched, setNotice }) {
 export default function App() {
   const [active, setActive] = useState("Overview");
   const [dark, setDark] = useState(() => localStorage.getItem("mailshield_theme") === "dark");
+  const [liveSync, setLiveSync] = useState(null);
+  const [liveBusy, setLiveBusy] = useState(false);
 
   useEffect(() => {
     document.documentElement.classList.toggle("dark", dark);
@@ -968,7 +993,32 @@ export default function App() {
   useEffect(() => {
     refreshData({ keepSelection: false });
     loadWorkspaces();
+    refreshLiveStatus();
   }, []);
+
+  async function refreshLiveStatus() {
+    try {
+      const st = await apiGet("/live-status");
+      setLiveSync(st);
+    } catch { /* backend offline */ }
+  }
+
+  async function toggleLive() {
+    setLiveBusy(true);
+    try {
+      const res = await fetch(`${API}/live-toggle`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled: !(liveSync && liveSync.enabled) }),
+      });
+      if (!res.ok) throw new Error((await res.json()).detail || "Toggle failed");
+      await refreshLiveStatus();
+      setNotice(liveSync && liveSync.enabled ? "Real-time sync paused" : "Real-time sync enabled — connected mailboxes are polled automatically");
+    } catch (e) {
+      setNotice(e.message);
+    }
+    setLiveBusy(false);
+  }
 
   async function loadWorkspaces() {
     try {
@@ -1075,7 +1125,7 @@ export default function App() {
     { label: "Workspaces", icon: "server" },
     { label: "Email Queue", icon: "inbox", count: cases.length },
     { label: "Threat Intel", icon: "radar" },
-    { label: "Infrastructure", icon: "map" },
+    { label: "Geolocation", icon: "map" },
     { label: "Case History", icon: "clock" },
   ];
 
@@ -1113,10 +1163,12 @@ export default function App() {
     const hops = (analysis.hops || []).slice(0, 3).reverse();
     if (hops.length === 0) return null;
     const originIp = analysis.originating_ip || {};
+    const hasGeo = h => h.geo && h.geo.city && h.geo.city !== "Unknown" && h.geo.city !== "Private";
     return hops.map((h, i) => ({
       label: i === hops.length - 1 && originIp.ip === h.ip ? "ORIGIN LIKELY" : `RELAY ${String(i + 1).padStart(2, "0")}`,
       host: h.host || "—",
       ip: h.ip || "—",
+      loc: hasGeo(h) ? `${h.geo.city}${h.geo.country ? ", " + h.geo.country : ""}${h.geo.tor ? " ⚠ TOR" : h.geo.vpn ? " ⚠ VPN/ASN" : ""}` : null,
       safe: i === 0,
       danger: i === hops.length - 1,
     }));
@@ -1154,7 +1206,7 @@ export default function App() {
                   )}
                 </div>
               ))}
-              {!workspaces.length && <p style={{ margin: "2px 9px 8px", color: "#9fb1b1", fontFamily: "'DM Sans',sans-serif", fontSize: 11 }}>Loading domains…</p>}
+              {!workspaces.length && <p style={{ margin: "2px 9px 8px", color: "#9fb1b1", fontFamily: "'DM Sans',sans-serif", fontSize: 12 }}>Loading domains…</p>}
               <p style={{ borderTop: "1px solid #30434b", marginTop: 6, paddingTop: 8 }}>QUICK LINKS</p>
               <button className="ws-link" onClick={() => { setActive("Workspaces"); setWorkspaceMenuOpen(false); }}><Icon name="server" size={15} /> Manage domains</button>
               <button className="ws-link" onClick={() => { setActive("Overview"); setWorkspaceMenuOpen(false); }}><Icon name="radar" size={15} /> Dashboard</button>
@@ -1174,14 +1226,28 @@ export default function App() {
       <main className="main">
         <header className="topbar">
           <div><span className="crumb">SECURITY OPERATIONS</span><span className="slash">/</span><b>{active}</b></div>
-          <div className="top-actions"><span className="live"><i /> Live monitoring</span><button className="avatar">AS</button></div>
+          <div className="top-actions">
+            <button
+              type="button"
+              onClick={toggleLive}
+              disabled={liveBusy}
+              title={liveSync && liveSync.enabled ? `Auto-syncing every ${liveSync.interval}s — click to pause` : "Real-time sync is paused — click to enable"}
+              style={{ border: 0, background: "transparent", cursor: "pointer", display: "inline-flex", alignItems: "center", padding: 0, fontFamily: "inherit" }}
+            >
+              <span className={`live ${liveSync && liveSync.enabled ? "" : "paused"}`} style={{ color: liveSync && liveSync.enabled ? "#54b486" : "var(--muted)", fontSize: 11 }}>
+                {liveSync && liveSync.enabled ? <i style={{ background: "#54b486" }} /> : "❚❚ "}
+                {liveSync === null ? "Live monitoring" : liveSync.enabled ? `Live · ${liveSync.interval}s` : "Live sync paused"}
+              </span>
+            </button>
+            <button className="avatar">AS</button>
+          </div>
         </header>
         <div className="content">
           {active !== "Overview" && (
             <div>
               {active === "Email Queue" && <EmailQueue cases={cases} onSelectCase={c => { setSelected(c); setActive("Overview"); }} onAnalyze={() => setScanOpen(true)} />}
               {active === "Threat Intel" && <ThreatIntel data={threatIntel} />}
-              {active === "Infrastructure" && <Infrastructure nodes={infraNodes} />}
+              {active === "Geolocation" && <Infrastructure nodes={infraNodes} />}
               {active === "Case History" && <CaseHistory history={caseHistory} />}
               {active === "Workspaces" && <Workspaces workspaces={workspaces} activeWs={activeWs} onOpen={switchWorkspace} onReset={resetWorkspace} onChanged={loadWorkspaces} />}
               {active === "Settings" && <Settings setNotice={setNotice} />}
@@ -1230,7 +1296,7 @@ export default function App() {
                     </button>
                   ))}
                   {visibleCases.length === 0 && (
-                    <p style={{ padding: "20px", color: "var(--muted)", fontSize: 12 }}>No active cases in priority queue. Analyze an email or sync live mail to populate the queue.</p>
+                    <p style={{ padding: "20px", color: "var(--muted)", fontSize: 13 }}>No active cases in priority queue. Analyze an email or sync live mail to populate the queue.</p>
                   )}
                 </div>
                 {selected && (
@@ -1259,12 +1325,13 @@ export default function App() {
                               <small>{i === 0 ? "ORIGIN" : hop.label}</small>
                               <b>{hop.host}</b>
                               <em>{hop.ip}</em>
+                              {hop.loc && <span style={{ fontSize: 10, color: "#56a987", fontStyle: "normal", letterSpacing: ".02em" }}><Icon name="map" size={9} /> {hop.loc}</span>}
                             </div>
                           </Fragment>
                         ))}
                       </div>
                     ) : (
-                      <p style={{ padding: "10px 0", color: "var(--muted)", fontSize: 11 }}>Relay path unavailable — no header data stored for this case.</p>
+                      <p style={{ padding: "10px 0", color: "var(--muted)", fontSize: 12 }}>Relay path unavailable — no header data stored for this case.</p>
                     )}
                   </div>
                   <div className="detail-section">
@@ -1279,7 +1346,7 @@ export default function App() {
                       ))}
                     </div>
                     {indicators.length === 0 && (
-                      <p style={{ color: "var(--muted)", fontSize: 11 }}>No indicators extracted for this case yet.</p>
+                      <p style={{ color: "var(--muted)", fontSize: 12 }}>No indicators extracted for this case yet.</p>
                     )}
                   </div>
                 </article>
@@ -1290,7 +1357,7 @@ export default function App() {
         </div>
       </main>
 
-      {connectOpen && <ConnectAccountModal onClose={() => setConnectOpen(false)} onCasesFetched={handleLiveCasesFetched} setNotice={setNotice} />}
+      {connectOpen && <ConnectAccountModal onClose={() => setConnectOpen(false)} onCasesFetched={handleLiveCasesFetched} setNotice={setNotice} onSynced={refreshLiveStatus} />}
       {scanOpen && <ScanModal onClose={() => setScanOpen(false)} onResult={handleScanResult} />}
       {scanResult && <ScanResultModal result={scanResult} onClose={() => setScanResult(null)} onAddCase={addCaseFromScan} />}
       {hackerOpen && <HackerInsightsModal case_={selected} onClose={() => setHackerOpen(false)} />}

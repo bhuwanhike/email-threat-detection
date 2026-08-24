@@ -24,14 +24,14 @@ export default function ThreatIntel({ data }) {
         <div className="queue-head" style={{ gridTemplateColumns: "90px 1fr 1fr 70px 80px 90px" }}>
           <span>TYPE</span><span>VALUE</span><span>THREAT</span><span>HITS</span><span>VT FLAGS</span><span>STATUS</span>
         </div>
-        {iocs.length === 0 && <p style={{ padding: "20px", color: "var(--muted)", fontSize: 12 }}>No indicators of compromise yet — they are aggregated automatically as emails are analyzed.</p>}
+        {iocs.length === 0 && <p style={{ padding: "20px", color: "var(--muted)", fontSize: 13 }}>No indicators of compromise yet — they are aggregated automatically as emails are analyzed.</p>}
         {iocs.map(ioc => (
           <div key={ioc.value} className="queue-row" style={{ gridTemplateColumns: "90px 1fr 1fr 70px 80px 90px" }}>
             <span><span className="ioc-type-badge">{ioc.type}</span></span>
-            <span style={{ fontFamily: "'Space Mono',monospace", fontSize: 9, color: "var(--ink)" }}>{ioc.value}</span>
-            <span style={{ fontSize: 10, color: "var(--muted)" }}>{ioc.threat}</span>
-            <span style={{ fontFamily: "'Space Mono',monospace", fontSize: 10 }}>{ioc.detections}</span>
-            <span style={{ fontFamily: "'Space Mono',monospace", fontSize: 10, color: ioc.vt > 0 ? "var(--coral)" : "var(--muted)" }}>{ioc.vt > 0 ? `${ioc.vt} engines` : "—"}</span>
+            <span style={{ fontFamily: "'Space Mono',monospace", fontSize: 10, color: "var(--ink)" }}>{ioc.value}</span>
+            <span style={{ fontSize: 11, color: "var(--muted)" }}>{ioc.threat}</span>
+            <span style={{ fontFamily: "'Space Mono',monospace", fontSize: 11 }}>{ioc.detections}</span>
+            <span style={{ fontFamily: "'Space Mono',monospace", fontSize: 11, color: ioc.vt > 0 ? "var(--coral)" : "var(--muted)" }}>{ioc.vt > 0 ? `${ioc.vt} engines` : "—"}</span>
             <span className={`severity ${ioc.accent}`}>{ioc.status}</span>
           </div>
         ))}
@@ -42,7 +42,7 @@ export default function ThreatIntel({ data }) {
           <div className="ttp-grid">
             {ttps.map(t => (
               <div key={t.id} className="ttp-card">
-                <span className="hi-ttp-id" style={{ fontSize: 9 }}>{t.id}</span>
+                <span className="hi-ttp-id" style={{ fontSize: 10 }}>{t.id}</span>
                 <b>{t.name}</b>
                 <span>{t.count} case{t.count > 1 ? "s" : ""}</span>
               </div>

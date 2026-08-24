@@ -97,9 +97,9 @@ export default function Workspaces({ workspaces, activeWs, onOpen, onReset, onCh
                   <Icon name={ws.icon} size={17} />
                 </span>
                 <div style={{ minWidth: 0 }}>
-                  <b style={{ fontSize: 13.5, display: "block", letterSpacing: "-.2px" }}>{ws.name}</b>
+                  <b style={{ fontSize: 14.5, display: "block", letterSpacing: "-.2px" }}>{ws.name}</b>
                   <small style={{
-                    fontFamily: "'Space Mono',monospace", fontSize: 7.5, letterSpacing: ".8px",
+                    fontFamily: "'Space Mono',monospace", fontSize: 8.5, letterSpacing: ".8px",
                     color: "var(--muted)", textTransform: "uppercase",
                   }}>
                     {ws.is_custom ? "Community contributed" : "Core domain"}
@@ -110,14 +110,14 @@ export default function Workspaces({ workspaces, activeWs, onOpen, onReset, onCh
                 )}
               </div>
 
-              <p style={{ fontSize: 10.5, color: "var(--muted)", margin: 0, lineHeight: 1.55, minHeight: 32 }}>
+              <p style={{ fontSize: 11.5, color: "var(--muted)", margin: 0, lineHeight: 1.55, minHeight: 32 }}>
                 {dash(ws.description)}
               </p>
 
-              <div style={{ display: "flex", gap: 14, fontFamily: "'Space Mono',monospace", fontSize: 8.5, color: "var(--muted)", letterSpacing: ".5px" }}>
-                <span><b style={{ color: ws.open_cases ? "#c85344" : "var(--ink)", fontSize: 11 }}>{ws.open_cases}</b> OPEN</span>
-                <span><b style={{ color: "var(--ink)", fontSize: 11 }}>{ws.total_cases}</b> ANALYZED</span>
-                <span><b style={{ color: "var(--ink)", fontSize: 11 }}>{ws.threats}</b> HIGH-RISK</span>
+              <div style={{ display: "flex", gap: 14, fontFamily: "'Space Mono',monospace", fontSize: 9.5, color: "var(--muted)", letterSpacing: ".5px" }}>
+                <span><b style={{ color: ws.open_cases ? "#c85344" : "var(--ink)", fontSize: 12 }}>{ws.open_cases}</b> OPEN</span>
+                <span><b style={{ color: "var(--ink)", fontSize: 12 }}>{ws.total_cases}</b> ANALYZED</span>
+                <span><b style={{ color: "var(--ink)", fontSize: 12 }}>{ws.threats}</b> HIGH-RISK</span>
               </div>
 
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -129,7 +129,7 @@ export default function Workspaces({ workspaces, activeWs, onOpen, onReset, onCh
                 <span style={{ marginLeft: "auto" }} />
                 {ws.is_custom && !ws.total_cases && (
                   <button title="Remove community domain" onClick={() => removeWorkspace(ws)}
-                    style={{ background: "none", border: "1px solid var(--line)", borderRadius: 5, color: "#c85344", padding: "6px 9px", fontSize: 10, fontWeight: 700, cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 5 }}>
+                    style={{ background: "none", border: "1px solid var(--line)", borderRadius: 5, color: "#c85344", padding: "6px 9px", fontSize: 11, fontWeight: 700, cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 5 }}>
                     <Icon name="x" size={11} /> Remove
                   </button>
                 )}
@@ -147,20 +147,20 @@ export default function Workspaces({ workspaces, activeWs, onOpen, onReset, onCh
             onChange={e => setName(e.target.value)}
             placeholder="Domain name — e.g. QR-code Phishing"
             maxLength={60}
-            style={{ flex: "1 1 240px", maxWidth: 300, background: "var(--surface)", border: "1px solid var(--line)", borderRadius: 6, color: "var(--ink)", padding: "10px 12px", fontSize: 12, outline: "none" }}
+            style={{ flex: "1 1 240px", maxWidth: 300, background: "var(--surface)", border: "1px solid var(--line)", borderRadius: 6, color: "var(--ink)", padding: "10px 12px", fontSize: 13, outline: "none" }}
           />
           <input
             value={desc}
             onChange={e => setDesc(e.target.value)}
             placeholder="Short description for the community…"
             maxLength={200}
-            style={{ flex: "2 1 320px", background: "var(--surface)", border: "1px solid var(--line)", borderRadius: 6, color: "var(--ink)", padding: "10px 12px", fontSize: 12, outline: "none" }}
+            style={{ flex: "2 1 320px", background: "var(--surface)", border: "1px solid var(--line)", borderRadius: 6, color: "var(--ink)", padding: "10px 12px", fontSize: 13, outline: "none" }}
           />
           <button className="scan-button" type="submit" disabled={busy || !name.trim()}>
             <Icon name="zap" size={14} /> {busy ? "Adding…" : "Add domain"}
           </button>
         </form>
-        <p className="lede" style={{ marginTop: -8, fontSize: 10.5 }}>
+        <p className="lede" style={{ marginTop: -8, fontSize: 11.5 }}>
           Core domains are shared by everyone; community domains can be removed while empty.
         </p>
       </section>

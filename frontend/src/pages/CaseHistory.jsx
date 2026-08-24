@@ -25,16 +25,16 @@ export default function CaseHistory({ history }) {
           <span>CASE ID</span><span>SENDER</span><span>SUBJECT</span><span>SCORE</span><span>RESOLUTION</span><span>BY</span>
         </div>
         {closedCases.length === 0 && (
-          <p style={{ padding: "20px", color: "var(--muted)", fontSize: 12 }}>No resolved cases yet — resolve a case from the overview to record it here.</p>
+          <p style={{ padding: "20px", color: "var(--muted)", fontSize: 13 }}>No resolved cases yet — resolve a case from the overview to record it here.</p>
         )}
         {closedCases.map(h => (
           <div key={h.id} className="queue-row" style={{ gridTemplateColumns: "90px 1fr 1fr 80px 1fr 50px" }}>
-            <span style={{ fontFamily: "'Space Mono',monospace", fontSize: 9 }}>{h.id}<br /><span style={{ color: "var(--muted)" }}>{h.closed}</span></span>
-            <span style={{ fontSize: 10 }}>{h.sender || "—"}</span>
-            <span style={{ fontSize: 10, color: "var(--muted)" }}>{h.subject || "—"}</span>
+            <span style={{ fontFamily: "'Space Mono',monospace", fontSize: 10 }}>{h.id}<br /><span style={{ color: "var(--muted)" }}>{h.closed}</span></span>
+            <span style={{ fontSize: 11 }}>{h.sender || "—"}</span>
+            <span style={{ fontSize: 11, color: "var(--muted)" }}>{h.subject || "—"}</span>
             <span className={`queue-score ${h.accent}`}>{h.score ?? "—"}</span>
-            <span style={{ fontSize: 10 }}>{h.resolution}</span>
-            <span className="workspace-avatar" style={{ width: 24, height: 24, fontSize: 8, borderRadius: "50%" }}>{h.analyst || "AS"}</span>
+            <span style={{ fontSize: 11 }}>{h.resolution}</span>
+            <span className="workspace-avatar" style={{ width: 24, height: 24, fontSize: 9, borderRadius: "50%" }}>{h.analyst || "AS"}</span>
           </div>
         ))}
       </div>

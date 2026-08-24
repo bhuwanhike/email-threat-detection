@@ -82,7 +82,7 @@ export default function Campaigns({ campaigns: propCampaigns }) {
       </div>
 
       {list.length === 0 && (
-        <p style={{ padding: "20px", color: "var(--muted)", fontSize: 12, border: "1px dashed var(--line)", borderRadius: 8 }}>
+        <p style={{ padding: "20px", color: "var(--muted)", fontSize: 13, border: "1px dashed var(--line)", borderRadius: 8 }}>
           No campaigns detected yet — clusters form automatically when analyzed emails share infrastructure or TTPs.
         </p>
       )}
@@ -94,34 +94,34 @@ export default function Campaigns({ campaigns: propCampaigns }) {
               <div>
                 <span className="ioc-type-badge" style={{ marginRight: 6 }}>{c.id.split("-")[1]}</span>
                 <span className={`severity ${c.accent}`}>{c.risk}</span>
-                <p style={{ fontSize: 11, fontWeight: 700, marginTop: 6, color: "var(--ink)" }}>{c.name}</p>
+                <p style={{ fontSize: 12, fontWeight: 700, marginTop: 6, color: "var(--ink)" }}>{c.name}</p>
               </div>
               <div style={{ textAlign: "right" }}>
                 <small style={{ color: "var(--muted)" }}>Emails</small>
-                <b style={{ display: "block", fontFamily: "'Space Mono',monospace", fontSize: 14 }}>{c.count}</b>
+                <b style={{ display: "block", fontFamily: "'Space Mono',monospace", fontSize: 15 }}>{c.count}</b>
               </div>
             </div>
 
-            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, color: "var(--muted)", marginBottom: 10 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: "var(--muted)", marginBottom: 10 }}>
               <span>First seen: {c.first_seen}</span>
               <span>Avg score: <b style={{ color: c.avg_risk_score > 70 ? "var(--coral)" : "var(--ink)" }}>{Math.round(c.avg_risk_score || 0)}</b></span>
             </div>
 
             {c.ttps?.length > 0 && (
               <div style={{ marginBottom: 8 }}>
-                <small style={{ fontSize: 9, color: "var(--muted)", textTransform: "uppercase", letterSpacing: 0.5 }}>TTPs</small>
+                <small style={{ fontSize: 10, color: "var(--muted)", textTransform: "uppercase", letterSpacing: 0.5 }}>TTPs</small>
                 <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginTop: 4 }}>
-                  {c.ttps.map(t => <span key={t} className="hi-ttp-id" style={{ fontSize: 8 }}>{t}</span>)}
+                  {c.ttps.map(t => <span key={t} className="hi-ttp-id" style={{ fontSize: 9 }}>{t}</span>)}
                 </div>
               </div>
             )}
 
             {c.iocs?.length > 0 && (
               <div style={{ marginBottom: 8 }}>
-                <small style={{ fontSize: 9, color: "var(--muted)", textTransform: "uppercase", letterSpacing: 0.5 }}>Shared IOCs ({c.iocs.length})</small>
+                <small style={{ fontSize: 10, color: "var(--muted)", textTransform: "uppercase", letterSpacing: 0.5 }}>Shared IOCs ({c.iocs.length})</small>
                 <div style={{ marginTop: 4, maxHeight: selected === c.id ? 200 : 42, overflow: "hidden", transition: "max-height 0.2s" }}>
                   {c.iocs.map(i => (
-                    <div key={i} style={{ fontFamily: "'Space Mono',monospace", fontSize: 9, color: "var(--ink)", padding: "2px 0" }}>
+                    <div key={i} style={{ fontFamily: "'Space Mono',monospace", fontSize: 10, color: "var(--ink)", padding: "2px 0" }}>
                       {i}
                     </div>
                   ))}
@@ -131,7 +131,7 @@ export default function Campaigns({ campaigns: propCampaigns }) {
 
             {selected === c.id && c.related_case_ids?.length > 0 && (
               <div style={{ marginTop: 10, paddingTop: 10, borderTop: "1px solid var(--line)" }}>
-                <small style={{ fontSize: 9, color: "var(--muted)", textTransform: "uppercase", letterSpacing: 0.5 }}>Related Cases</small>
+                <small style={{ fontSize: 10, color: "var(--muted)", textTransform: "uppercase", letterSpacing: 0.5 }}>Related Cases</small>
                 <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 6 }}>
                   {c.related_case_ids.map(cid => (
                     <button
@@ -139,7 +139,7 @@ export default function Campaigns({ campaigns: propCampaigns }) {
                       onClick={e => { e.stopPropagation(); openCase(cid); }}
                       style={{
                         fontFamily: "'Space Mono',monospace",
-                        fontSize: 10,
+                        fontSize: 11,
                         padding: "4px 8px",
                         background: "var(--line)",
                         color: "var(--ink)",
@@ -156,7 +156,7 @@ export default function Campaigns({ campaigns: propCampaigns }) {
               </div>
             )}
 
-            <small style={{ fontSize: 9, color: "var(--muted)", marginTop: 6, display: "block" }}>
+            <small style={{ fontSize: 10, color: "var(--muted)", marginTop: 6, display: "block" }}>
               Click to {selected === c.id ? "collapse" : "expand"} · Last seen: {c.last_seen}
             </small>
           </div>

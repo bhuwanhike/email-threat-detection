@@ -109,6 +109,19 @@ def init_db():
             CREATE INDEX IF NOT EXISTS idx_cases_campaign ON cases(campaign_id);
             ALTER TABLE cases ADD COLUMN IF NOT EXISTS ws_slug TEXT NOT NULL DEFAULT 'general';
 
+            CREATE TABLE IF NOT EXISTS connected_accounts (
+                id            TEXT PRIMARY KEY,
+                provider      TEXT NOT NULL,
+                email         TEXT NOT NULL,
+                method        TEXT NOT NULL DEFAULT 'imap',
+                secret_enc    TEXT,
+                enabled       BOOLEAN NOT NULL DEFAULT TRUE,
+                last_sync_at  TIMESTAMPTZ,
+                last_status   TEXT,
+                processed     INTEGER NOT NULL DEFAULT 0,
+                connected_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+            );
+
             DROP TABLE IF EXISTS workspaces CASCADE;
             CREATE TABLE workspaces (
                 id           SERIAL PRIMARY KEY,
@@ -473,3 +486,53 @@ def get_stats(ws=None) -> dict:
         "ioc_matches": int(ioc_row["hits"]) if total else None,
         "high_confidence_hits": malicious if total else None,
     }
+
+
+# ── Connected accounts (live sync) ───────────────────────────────────────────
+
+def upsert_connected_account(acct_id, provider, email, method, secret_enc):
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            """INSERT INTO connected_accounts (id, provider, email, method, secret_enc)
+               VALUES (%s,%s,%s,%s,%s)
+               ON CONFLICT (id) DO UPDATE SET
+                 provider=EXCLUDED.provider, method=EXCLUDED.method,
+                 secret_enc=EXCLUDED.secret_enc, enabled=TRUE""",
+            (acct_id, provider, email, method, secret_enc),
+        )
+        conn.commit()
+
+
+def list_connected_accounts() -> list:
+    with get_conn() as conn, conn.cursor(row_factory=dict_row) as cur:
+        cur.execute("SELECT * FROM connected_accounts ORDER BY connected_at")
+        return cur.fetchall()
+
+
+def delete_connected_account(acct_id):
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("DELETE FROM connected_accounts WHERE id=%s", [acct_id])
+        conn.commit()
+        return cur.rowcount > 0
+
+
+def set_account_synced(acct_id, status: str, processed_inc: int = 0):
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            """UPDATE connected_accounts
+               SET last_sync_at=now(), last_status=%s,
+                   processed = processed + %s""",
+            [status, processed_inc],
+        )
+        conn.commit()
+
+
+def message_id_seen(message_id: str) -> bool:
+    if not message_id or message_id in ("(No Subject)", ""):
+        return False
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT 1 FROM cases WHERE analysis->>'message_id' = %s LIMIT 1",
+            [message_id],
+        )
+        return cur.fetchone() is not None

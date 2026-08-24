@@ -59,13 +59,13 @@ export default function Settings({ setNotice }) {
       </section>
 
       {error && (
-        <p style={{ padding: "14px", color: "var(--coral)", fontSize: 12, border: "1px dashed var(--coral)", borderRadius: 8, marginBottom: 16 }}>
+        <p style={{ padding: "14px", color: "var(--coral)", fontSize: 13, border: "1px dashed var(--coral)", borderRadius: 8, marginBottom: 16 }}>
           {error}
         </p>
       )}
 
       {!config && !error && (
-        <p style={{ color: "var(--muted)", fontSize: 12 }}>Loading settings…</p>
+        <p style={{ color: "var(--muted)", fontSize: 13 }}>Loading settings…</p>
       )}
 
       {config && (
@@ -73,7 +73,7 @@ export default function Settings({ setNotice }) {
           <div className="sr-card" style={{ padding: 16 }}>
             <p className="ti-section-label"><Icon name="eye" size={12} /> PII MASKING</p>
             <label style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, cursor: "pointer" }}>
-              <span style={{ fontSize: 11, color: "var(--ink)" }}>
+              <span style={{ fontSize: 12, color: "var(--ink)" }}>
                 Mask emails, phone numbers, card numbers, SSN/Aadhaar/PAN in stored bodies and previews
                 <small style={{ display: "block", color: "var(--muted)", marginTop: 2 }}>
                   Currently: {maskPii ? "enabled (GDPR/DPDP)" : "disabled"}
@@ -86,7 +86,7 @@ export default function Settings({ setNotice }) {
           <div className="sr-card" style={{ padding: 16 }}>
             <p className="ti-section-label"><Icon name="clock" size={12} /> DATA RETENTION</p>
             <label style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
-              <span style={{ fontSize: 11, color: "var(--ink)" }}>
+              <span style={{ fontSize: 12, color: "var(--ink)" }}>
                 Retain analyzed cases for (days)
                 <small style={{ display: "block", color: "var(--muted)", marginTop: 2 }}>
                   Current value: {dash(config.retention_days)} days
@@ -105,7 +105,7 @@ export default function Settings({ setNotice }) {
 
           <div className="sr-card" style={{ padding: 16 }}>
             <p className="ti-section-label"><Icon name="shield" size={12} /> EVIDENCE HASH ALGORITHM</p>
-            <span style={{ fontSize: 11, color: "var(--muted)", fontFamily: "'Space Mono',monospace" }}>{dash(config.evidence_hash_algo)}</span>
+            <span style={{ fontSize: 12, color: "var(--muted)", fontFamily: "'Space Mono',monospace" }}>{dash(config.evidence_hash_algo)}</span>
           </div>
 
           <div className="modal-actions">

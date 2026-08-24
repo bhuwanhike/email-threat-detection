@@ -54,7 +54,7 @@ export default function Infrastructure({ nodes }) {
       </section>
       <div id="infra-map" style={{ height: 380, borderRadius: 8, border: "1px solid var(--line)", marginBottom: 24, display: infraNodes.length === 0 ? "none" : undefined }} />
       {infraNodes.length === 0 && (
-        <p style={{ padding: "20px", color: "var(--muted)", fontSize: 12, border: "1px dashed var(--line)", borderRadius: 8 }}>
+        <p style={{ padding: "20px", color: "var(--muted)", fontSize: 13, border: "1px dashed var(--line)", borderRadius: 8 }}>
           No infrastructure observed yet — sender IPs appear here automatically as emails are analyzed.
         </p>
       )}
@@ -64,14 +64,14 @@ export default function Infrastructure({ nodes }) {
           <span>TYPE</span><span>HOST / IP</span><span>LOCATION</span><span>ASN / ORG</span><span>RISK</span>
         </div>
         {infraNodes.length === 0 && (
-          <p style={{ padding: "20px", color: "var(--muted)", fontSize: 12 }}>No nodes recorded.</p>
+          <p style={{ padding: "20px", color: "var(--muted)", fontSize: 13 }}>No nodes recorded.</p>
         )}
         {infraNodes.map(n => (
           <div key={n.ip} className="queue-row" style={{ gridTemplateColumns: "100px 1fr 1fr 1fr 80px" }}>
             <span><span className="ioc-type-badge">{n.type}</span></span>
-            <span style={{ fontFamily: "'Space Mono',monospace", fontSize: 9 }}>{dash(n.host)}<br /><span style={{ color: "var(--muted)" }}>{n.ip}</span></span>
-            <span style={{ fontSize: 10 }}>{n.city || "—"}{n.country ? `, ${n.country}` : ""}</span>
-            <span style={{ fontSize: 10, color: "var(--muted)" }}>{dash(n.org)}</span>
+            <span style={{ fontFamily: "'Space Mono',monospace", fontSize: 10 }}>{dash(n.host)}<br /><span style={{ color: "var(--muted)" }}>{n.ip}</span></span>
+            <span style={{ fontSize: 11 }}>{n.city || "—"}{n.country ? `, ${n.country}` : ""}</span>
+            <span style={{ fontSize: 11, color: "var(--muted)" }}>{dash(n.org)}</span>
             <span className={`severity ${n.risk}`}>{(n.risk || "medium").toUpperCase()}</span>
           </div>
         ))}

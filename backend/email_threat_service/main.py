@@ -3,6 +3,7 @@ import re
 import json
 import base64
 import hashlib
+import hmac
 import secrets
 import logging
 import ipaddress
@@ -32,6 +33,110 @@ from mail_fetcher import (
     poll_outlook_token,
     fetch_outlook_live_emails_via_graph
 )
+
+
+# ── Real-Time Live Sync Engine ────────────────────────────────────────────────
+
+LIVE_STATE = {
+    "enabled": False,
+    "interval": int(os.getenv("LIVE_SYNC_INTERVAL", "60")),
+    "task": None,
+    "started_at": None,
+}
+
+
+def _outlook_refresh_access_token(refresh_token: str) -> str:
+    res = requests.post(
+        "https://login.microsoftonline.com/common/oauth2/v2.0/token",
+        data={
+            "grant_type": "refresh_token",
+            "client_id": os.getenv("AZURE_CLIENT_ID", MS_CLIENT_ID_DEFAULT),
+            "refresh_token": refresh_token,
+            "scope": "https://graph.microsoft.com/Mail.Read https://graph.microsoft.com/User.Read offline_access",
+        },
+        timeout=10,
+    )
+    payload = res.json()
+    if "access_token" not in payload:
+        raise RuntimeError(f"Outlook token refresh failed: {payload.get('error_description', payload)}")
+    return payload["access_token"]
+
+
+async def _sync_account(acct: dict) -> int:
+    """Fetch new unread mail for one account, dedupe, analyze. Returns processed count."""
+    method = acct["method"]
+    secret = decrypt_secret(acct.get("secret_enc") or "")
+
+    if method == "oauth":
+        access_token = _outlook_refresh_access_token(secret)
+        raw_list = await asyncio.to_thread(
+            fetch_outlook_live_emails_via_graph, access_token, 10
+        )
+    else:
+        raw_list = await asyncio.to_thread(
+            fetch_unread_emails, acct["provider"], acct["email"], secret, 10,
+        )
+
+    processed = 0
+    for raw in raw_list:
+        try:
+            msg = email_lib.message_from_string(raw, policy=policy.default)
+            mid = str(msg.get("Message-ID", "")).strip()
+            if mid and db.message_id_seen(mid):
+                continue
+            result = await analyze_email(EmailRequest(raw=raw))
+            processed += 1
+            logging.info("Live sync analyzed %s (%s %s)", result["case_id"], result["score"], result["label"])
+        except Exception:
+            logging.exception("Live sync failed to analyze an email for %s", acct["email"])
+
+    db.set_account_synced(acct["id"], "ok" if processed >= 0 else "empty", processed)
+    return processed
+
+
+async def _live_loop():
+    logging.info("Live sync engine started (every %ss)", LIVE_STATE["interval"])
+    while LIVE_STATE["enabled"]:
+        try:
+            accounts = [a for a in db.list_connected_accounts() if a["enabled"]]
+            for acct in accounts:
+                if not LIVE_STATE["enabled"]:
+                    break
+                try:
+                    n = await _sync_account(acct)
+                    if n:
+                        await dispatch_alert(
+                            alert_type="LIVE_SYNC",
+                            case_id="batch",
+                            score=0,
+                            label=f"{n} new",
+                            detail=f"Auto-sync pulled {n} new email(s) from {acct['email']}",
+                        )
+                except Exception as exc:
+                    logging.error("Live sync error for %s: %s", acct["email"], exc)
+                    db.set_account_synced(acct["id"], f"error: {str(exc)[:80]}")
+        except Exception:
+            logging.exception("Live sync loop iteration failed")
+        await asyncio.sleep(LIVE_STATE["interval"])
+
+
+def set_live_enabled(enabled: bool):
+    LIVE_STATE["enabled"] = enabled
+    if enabled and (LIVE_STATE["task"] is None or LIVE_STATE["task"].done()):
+        LIVE_STATE["task"] = asyncio.create_task(_live_loop())
+        LIVE_STATE["started_at"] = datetime.now(timezone.utc).isoformat()
+        logging.info("Live sync enabled")
+    elif not enabled and LIVE_STATE["task"]:
+        LIVE_STATE["task"].cancel()
+        LIVE_STATE["task"] = None
+        logging.info("Live sync disabled")
+
+
+class LiveToggleRequest(BaseModel):
+    enabled: bool
+
+
+MS_CLIENT_ID_DEFAULT = "14d82eec-204b-4c2f-b7e8-296a70dab67e"
 
 load_dotenv()
 
@@ -88,6 +193,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+@app.on_event("startup")
+async def start_live_sync_if_accounts():
+    try:
+        if any(a["enabled"] for a in db.list_connected_accounts()):
+            set_live_enabled(True)
+    except Exception:
+        logging.exception("Live sync autostart failed")
+
+
 # ── Account Connection & Ingestion Models ────────────────────────────────────
 
 class EmailRequest(BaseModel):
@@ -115,12 +230,60 @@ class ResolveCaseRequest(BaseModel):
 CONNECTED_ACCOUNTS = []
 
 
+# ── Secret obfuscation for stored mail credentials (stdlib stream cipher) ────
+
+_SECRET_KEY = hashlib.sha256(
+    os.getenv("SECRET_KEY", "mailshield-local-dev-key").encode()
+).digest()
+
+
+def _keystream(n: int) -> bytes:
+    out, counter = b"", 0
+    while len(out) < n:
+        out += hmac.new(_SECRET_KEY, counter.to_bytes(8, "big"), hashlib.sha256).digest()
+        counter += 1
+    return out[:n]
+
+
+def encrypt_secret(plain: str) -> str:
+    raw = plain.encode()
+    xored = bytes(b ^ k for b, k in zip(raw, _keystream(len(raw))))
+    return base64.b64encode(xored).decode()
+
+
+def decrypt_secret(enc: str) -> str:
+    if not enc:
+        return ""
+    xored = base64.b64decode(enc.encode())
+    return bytes(b ^ k for b, k in zip(xored, _keystream(len(xored)))).decode(errors="replace")
+
+
 SUSPICIOUS_ASNS = {
     "AS20473", "AS14061", "AS16276", "AS24940", "AS51167",  # VPS/cloud
     "AS9009", "AS60781", "AS197695", "AS49981",              # bulletproof
     "AS7922", "AS209", "AS701",                              # residential proxies (common abuse)
 }
 TOR_EXIT_ASNS = {"AS60729", "AS4224", "AS50628"}
+
+THREAT_SIGNALS = {
+    "credential_harvest": ([
+        "verify your account", "confirm your identity", "validate your",
+        "reset your password", "login to", "sign in to", "unusual activity",
+        "security alert", "account locked", "suspended", "update your billing",
+    ], 11),
+    "urgency_pressure": ([
+        "urgent", "immediately", "action required", "limited time", "expires",
+        "final notice", "act now", "within 24 hours", "last chance", "asap",
+    ], 9),
+    "financial_lure": ([
+        "invoice", "payment", "wire transfer", "bank account", "overdue",
+        "remittance", "swift", "iban", "refund", "gift card", "crypto",
+    ], 8),
+    "authority_threat": ([
+        "legal action", "lawsuit", "law enforcement", "irs", "police",
+        "unauthorized access", "deactivated", "permanently delete", "penalty",
+    ], 10),
+}
 
 PHISHING_KEYWORDS = [
     "urgent", "verify", "suspended", "account", "click here", "confirm",
@@ -274,7 +437,7 @@ def analyze_urls(urls: List[str]) -> List[dict]:
                 info["obfuscated"] = True
                 info["techniques"].append("Raw IP URL (no domain)")
             shorteners = ["bit.ly", "tinyurl.com", "t.co", "goo.gl", "is.gd", "buff.ly", "ow.ly", "adf.ly", "shorte.st", "cutt.ly", "rb.gy"]
-            if any(s in host for s in shorteners):
+            if any(host == s or host.endswith("." + s) for s in shorteners):
                 info["shortened"] = True
                 info["obfuscated"] = True
                 info["techniques"].append("URL shortener used (hides destination)")
@@ -573,21 +736,27 @@ def derive_ttps(flags: List[str], bec: dict, origin_attribution: dict) -> List[d
 
     joined = " ".join(f.lower() for f in flags)
 
-    if any("url" in f and ("body" in f or "obfuscation" in f) for f in (x.lower() for x in flags)):
+    if any(
+        "link" in f.lower() or "url" in f.lower() or "obfuscation" in f.lower()
+        or "tld" in f.lower() or "shortened" in f.lower() or "raw-ip" in f.lower()
+        for f in flags
+    ):
         add("T1566.002", "Spearphishing Link", "Email body contains links to potential lure pages")
 
-    if "dangerous attachment" in joined:
+    if "dangerous attachment" in joined or "double-extension disguise" in joined:
         add("T1566.001", "Spearphishing Attachment", "Malicious file attachment used as initial access vector")
         add("T1204.002", "User Execution: Malicious File", "Recipient may open the malicious attachment")
+    if "double-extension disguise" in joined:
+        found["T1566.001"]["detail"] = "Attachment uses a double extension to disguise an executable payload"
 
-    if "lookalike domain" in joined or "display-name spoof" in joined or "no mx records" in joined:
+    if "lookalike domain" in joined or "display-name spoof" in joined or "no mx records" in joined or "homoglyph" in joined:
         add("T1036.005", "Match Legitimate Name or Location", "Sender masquerades as a legitimate brand or domain")
 
     if "payment_diversion" in bec or "invoice_fraud" in bec:
         add("T1657", "Financial Theft and Impact", "BEC pattern aimed at diverting payments")
     if "exec_impersonation" in bec:
         add("T1534", "Internal Spearphishing", "Executive impersonation to trigger fraudulent actions")
-    if "credential_harvest" in bec:
+    if "credential_harvest" in bec or "insecure http link" in joined:
         add("T1598.003", "Phishing for Information: Credential Harvesting", "Lure designed to capture user credentials")
 
     for f in flags:
@@ -656,18 +825,46 @@ def extract_relay_hops(msg) -> list:
     received = msg.get_all("Received") or []
     hops = []
     for r in received:
-        ip_match = re.search(r"\[(\d{1,3}(?:\.\d{1,3}){3})\]", r)
-        host_match = re.search(r"from\s+(\S+)", r)
+        rs = r.strip()
+        ip_match = re.search(r"\[(\d{1,3}(?:\.\d{1,3}){3})\]", rs)
+        from_match = re.search(r"^from\s+(\S+)", rs)
+        by_match = re.search(r"\bby\s+(\S+?)(?:\s+(?:with|using|id|for|;)|$|;)", rs)
         hops.append({
-            "raw": r.strip()[:120],
+            "raw": rs[:160],
             "ip": ip_match.group(1) if ip_match else None,
-            "host": host_match.group(1) if host_match else "unknown",
+            "host": (from_match.group(1).rstrip(".") if from_match
+                     else (by_match.group(1).rstrip(".") if by_match else "unknown")),
+            "by": by_match.group(1).rstrip(".") if by_match else None,
         })
     return hops
 
 
+def collect_origin_candidates(msg, hops: List[dict]) -> List[str]:
+    """Priority-ordered public IPs most likely to be the true sending host:
+    1. Explicit origin headers (X-Originating-IP etc.)
+    2. Received chain walked bottom-up (last hop sits closest to the sender)
+    Deterministic order — no set() shuffling."""
+    candidates: List[str] = []
+
+    def _push(ip):
+        if ip and is_valid_public_ip(ip) and ip not in candidates:
+            candidates.append(ip)
+
+    for h in ("X-Originating-IP", "X-Real-IP", "X-Sender-IP", "Originating-Client-IP"):
+        val = msg.get(h)
+        if val:
+            for m in re.findall(r"\[(\d{1,3}(?:\.\d{1,3}){3})\]|\b(\d{1,3}(?:\.\d{1,3}){3})\b", str(val)):
+                _push(m[0] or m[1])
+    for hop in reversed(hops):
+        _push(hop.get("ip"))
+    return candidates[:6]
+
+
 def extract_urls(text: str) -> list:
     return re.findall(r"https?://[^\s\)\"'<>]+", text)
+
+
+DECEPTIVE_FINAL_EXTS = {".exe", ".scr", ".pif", ".com", ".bat", ".cmd", ".js", ".vbs", ".lnk"}
 
 
 def extract_attachments(msg) -> list:
@@ -677,11 +874,14 @@ def extract_attachments(msg) -> list:
             filename = part.get_filename()
             if filename:
                 ext = os.path.splitext(filename)[1].lower()
+                parts = filename.lower().split(".")
+                double_extension = len(parts) >= 3 and f".{parts[-1]}" in DECEPTIVE_FINAL_EXTS
                 attachments.append({
                     "filename": filename,
                     "content_type": part.get_content_type(),
                     "extension": ext,
                     "dangerous": ext in DANGEROUS_EXTENSIONS,
+                    "double_extension": double_extension,
                 })
     return attachments
 
@@ -711,15 +911,17 @@ def dns_mx_lookup(domain: str) -> dict:
     return result
 
 
-def nlp_score(subject: str, body: str, auth: dict, from_addr: str, reply_to: str):
+def nlp_score(subject: str, body: str, auth: dict, from_addr: str, reply_to: str, url_analysis=None):
     score = 0
     flags = []
     combined = (subject + " " + body).lower()
 
-    keyword_hits = [kw for kw in PHISHING_KEYWORDS if kw in combined]
-    score += min(len(keyword_hits) * 8, 40)
-    if keyword_hits:
-        flags.append(f"Phishing keywords: {', '.join(keyword_hits[:5])}")
+    # ── Weighted content-signal categories (capped per category) ─────────────
+    for cat, (kws, weight) in THREAT_SIGNALS.items():
+        hits = [kw for kw in kws if kw in combined]
+        if hits:
+            score += min(len(hits) * weight, weight * 3)
+            flags.append(f"{cat.replace('_', ' ').title()} language: {', '.join(hits[:4])}")
 
     if auth["spf"] == "fail":
         score += 20
@@ -746,10 +948,23 @@ def nlp_score(subject: str, body: str, auth: dict, from_addr: str, reply_to: str
             flags.append(f"Lookalike domain: {from_addr}")
             break
 
-    urls = extract_urls(body)
-    if urls:
-        score += min(len(urls) * 5, 15)
-        flags.append(f"{len(urls)} URL(s) in body")
+    # ── Link-based signals from the URL analysis pass ────────────────────────
+    ua_list = url_analysis or []
+    if ua_list:
+        score += min(len(ua_list) * 4, 12)
+        flags.append(f"{len(ua_list)} link(s) in body")
+    if any(u["url"].startswith("http://") for u in ua_list):
+        score += 8
+        flags.append("Insecure HTTP link (credentials could be intercepted)")
+    if any(u.get("shortened") for u in ua_list):
+        score += 6
+        flags.append("Shortened URLs hide true destination")
+    if any(u.get("has_ip") for u in ua_list):
+        score += 8
+        flags.append("Raw-IP URLs bypass domain reputation")
+    if any(u.get("suspicious_tld") for u in ua_list):
+        score += 8
+        flags.append("Suspicious TLD link(s)")
 
     score = min(score, 100)
     label, accent = _label(score)
@@ -766,30 +981,72 @@ def _label(score: int):
     return "LOW", "green"
 
 
+GEO_CACHE: Dict[str, dict] = {}
+
+
 def geoip(ip: str) -> dict:
+    """Geolocate a public IP. Uses ipinfo.io when IPINFO_TOKEN is set,
+    falls back to the token-free ip-api.com service, caches every lookup."""
+    empty = {"ip": ip, "city": "", "region": "", "country": "", "org": "",
+             "lat": 0, "lng": 0, "vpn": False, "tor": False, "source": ""}
     if not is_valid_public_ip(ip):
-        return {"ip": ip, "city": "Private", "region": "", "country": "", "org": "", "lat": 0, "lng": 0, "vpn": False, "tor": False}
+        return {**empty, "city": "Private"}
+    if ip in GEO_CACHE:
+        return GEO_CACHE[ip]
+
+    def _finish(d: dict, source: str) -> dict:
+        loc = str(d.get("loc") or "0,0").split(",")
+        org = d.get("org", "") or ""
+        asn = org.split(" ")[0] if org else ""
+        res = {
+            "ip": ip,
+            "city": d.get("city") or "Unknown",
+            "region": d.get("region") or "",
+            "country": d.get("country") or "",
+            "org": org,
+            "timezone": d.get("timezone") or "",
+            "lat": float(loc[0]) if len(loc) == 2 else 0,
+            "lng": float(loc[1]) if len(loc) == 2 else 0,
+            "vpn": asn in SUSPICIOUS_ASNS,
+            "tor": asn in TOR_EXIT_ASNS,
+            "source": source,
+        }
+        GEO_CACHE[ip] = res
+        return res
+
     try:
-        r = requests.get(f"https://ipinfo.io/{ip}?token={IPINFO_TOKEN}", timeout=5)
+        url = f"https://ipinfo.io/{ip}/json" + (f"?token={IPINFO_TOKEN}" if IPINFO_TOKEN else "")
+        r = requests.get(url, timeout=5)
         if r.status_code == 200:
             d = r.json()
-            loc = d.get("loc", "0,0").split(",")
-            org = d.get("org", "")
-            asn = org.split(" ")[0] if org else ""
-            return {
-                "ip": ip,
-                "city": d.get("city", "Unknown"),
-                "region": d.get("region", ""),
-                "country": d.get("country", ""),
-                "org": org,
-                "lat": float(loc[0]) if len(loc) == 2 else 0,
-                "lng": float(loc[1]) if len(loc) == 2 else 0,
-                "vpn": asn in SUSPICIOUS_ASNS,
-                "tor": asn in TOR_EXIT_ASNS,
-            }
+            if "error" not in d:
+                return _finish(d, "ipinfo")
     except requests.RequestException:
         pass
-    return {"ip": ip, "city": "Unknown", "region": "", "country": "", "org": "", "lat": 0, "lng": 0, "vpn": False, "tor": False}
+
+    # Token-free fallback provider
+    try:
+        r = requests.get(
+            "http://ip-api.com/json/" + ip,
+            params={"fields": "status,message,country,countryCode,regionName,city,timezone,isp,org,as,lat,lon"},
+            timeout=6,
+        )
+        if r.status_code == 200:
+            d = r.json()
+            if d.get("status") == "success":
+                return _finish({
+                    "city": d.get("city"),
+                    "region": d.get("regionName"),
+                    "country": d.get("countryCode"),
+                    "org": d.get("as") or d.get("org"),
+                    "loc": f"{d.get('lat')},{d.get('lon')}",
+                    "timezone": d.get("timezone"),
+                }, "ip-api")
+    except requests.RequestException:
+        pass
+
+    logging.warning("Geolocation failed for %s (both providers)", ip)
+    return {**empty, "city": "Unknown"}
 
 
 def vt_check_domain(domain: str) -> dict:
@@ -888,23 +1145,35 @@ async def analyze_email(req: EmailRequest):
 
     auth = parse_auth_results(msg)
     hops = extract_relay_hops(msg)
-    ips = extract_ips(req.raw)
+    ips = collect_origin_candidates(msg, hops) or extract_ips(req.raw)
     urls = extract_urls(body)
+    url_analysis = analyze_urls(urls)
     attachments = extract_attachments(msg)
     bec = classify_bec(subject, body)
 
-    score, label, accent, flags = nlp_score(subject, body, auth, from_addr, reply_to)
+    score, label, accent, flags = nlp_score(subject, body, auth, from_addr, reply_to, url_analysis=url_analysis)
 
     dangerous_attachments = [a for a in attachments if a["dangerous"]]
     if dangerous_attachments:
         score = min(score + 15, 100)
         flags.append(f"Dangerous attachment: {dangerous_attachments[0]['filename']}")
 
+    disguised = [a for a in attachments if a.get("double_extension")]
+    if disguised:
+        score = min(score + 20, 100)
+        flags.append(f"Double-extension disguise: {disguised[0]['filename']}")
+
     if bec:
         score = min(score + 10, 100)
         flags.append(f"BEC pattern: {', '.join(bec.keys())}")
 
-    geo_results = [geoip(ip) for ip in ips[:4]]
+    geo_results = [geoip(ip) for ip in ips]
+    geo_by_ip = {g["ip"]: g for g in geo_results}
+    for h in hops:
+        if h.get("ip"):
+            h["geo"] = geo_by_ip.get(h["ip"])
+    if hops and not any(is_valid_public_ip(h.get("ip")) for h in hops):
+        flags.append("No geolocatable public relay — internal/private relay chain")
 
     for g in geo_results:
         if g.get("tor"):
@@ -940,10 +1209,8 @@ async def analyze_email(req: EmailRequest):
         for tech in display_spoof.get("techniques", []):
             flags.append(f"Display-name spoof: {tech}")
 
-    url_analysis = analyze_urls(urls)
     for ua in url_analysis:
         if ua.get("obfuscated"):
-            score = min(score + 6, 100)
             for tech in ua.get("techniques", []):
                 flags.append(f"URL obfuscation ({ua['url'][:50]}…): {tech}")
 
@@ -952,6 +1219,10 @@ async def analyze_email(req: EmailRequest):
     reply_to_mismatch = bool(reply_domain and from_d_match and reply_domain.group(1) != from_d_match.group(1))
 
     originating_ip = find_originating_ip(hops, ips)
+    if originating_ip.get("ip"):
+        og = next((g for g in geo_results if g["ip"] == originating_ip["ip"]), None)
+        if og:
+            originating_ip["geo"] = og
     origin_attribution = attribute_origin_type(
         auth, geo_results, whois_data, dns_data, vt_domain,
         reply_to_mismatch, display_spoof, hops
@@ -1423,18 +1694,25 @@ def remove_workspace(ws_id: int):
 
 
 @app.post("/connect-account")
-def connect_account(req: AccountConnectRequest):
+async def connect_account(req: AccountConnectRequest):
     try:
-        res = test_connection(req.provider, req.email, req.password, req.custom_host, req.custom_port or 993)
-        acct_meta = {
-            "id": f"{req.provider}-{req.email}",
+        res = await asyncio.to_thread(
+            test_connection, req.provider, req.email, req.password,
+            req.custom_host, req.custom_port or 993,
+        )
+        acct_id = f"{req.provider}-{req.email}"
+        db.upsert_connected_account(acct_id, req.provider, req.email, "imap", encrypt_secret(req.password))
+        meta = {
+            "id": acct_id,
             "provider": req.provider,
             "email": req.email,
+            "method": "imap",
             "status": "connected",
-            "connected_at": datetime.now(timezone.utc).isoformat()
+            "live_sync": True,
         }
-        if not any(a["id"] == acct_meta["id"] for a in CONNECTED_ACCOUNTS):
-            CONNECTED_ACCOUNTS.append(acct_meta)
+        if not any(a["id"] == meta["id"] for a in CONNECTED_ACCOUNTS):
+            CONNECTED_ACCOUNTS.append(meta)
+        set_live_enabled(True)  # first connected account switches real-time sync on
         return res
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -1442,7 +1720,62 @@ def connect_account(req: AccountConnectRequest):
 
 @app.get("/connected-accounts")
 def get_connected_accounts():
-    return CONNECTED_ACCOUNTS
+    try:
+        rows = db.list_connected_accounts()
+        return [
+            {
+                "id": r["id"], "provider": r["provider"], "email": r["email"],
+                "method": r["method"], "enabled": r["enabled"],
+                "last_sync_at": r["last_sync_at"].isoformat() if r["last_sync_at"] else None,
+                "last_status": r["last_status"],
+                "processed": r["processed"],
+            }
+            for r in rows
+        ]
+    except Exception:
+        return CONNECTED_ACCOUNTS
+
+
+@app.delete("/connected-accounts/{acct_id:path}")
+def remove_connected_account(acct_id: str):
+    ok = db.delete_connected_account(acct_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Account not found")
+    return {"status": "removed", "id": acct_id}
+
+
+@app.get("/live-status")
+def live_status():
+    accounts = []
+    try:
+        accounts = [
+            {
+                "email": r["email"], "provider": r["provider"],
+                "last_sync_at": r["last_sync_at"].isoformat() if r["last_sync_at"] else None,
+                "last_status": r["last_status"], "processed": r["processed"],
+            }
+            for r in db.list_connected_accounts() if r["enabled"]
+        ]
+    except Exception:
+        pass
+    return {
+        "enabled": LIVE_STATE["enabled"],
+        "interval": LIVE_STATE["interval"],
+        "accounts": accounts,
+    }
+
+
+@app.post("/live-toggle")
+async def live_toggle(req: LiveToggleRequest):
+    has_accounts = False
+    try:
+        has_accounts = any(a["enabled"] for a in db.list_connected_accounts())
+    except Exception:
+        pass
+    if req.enabled and not has_accounts:
+        raise HTTPException(status_code=400, detail="Connect a mailbox account first — nothing to sync yet.")
+    set_live_enabled(req.enabled)
+    return {"enabled": LIVE_STATE["enabled"], "interval": LIVE_STATE["interval"]}
 
 
 class PollTokenRequest(BaseModel):
@@ -1466,6 +1799,23 @@ async def outlook_poll_token(req: PollTokenRequest):
             return poll_res
 
         access_token = poll_res.get("access_token")
+        refresh_token = poll_res.get("refresh_token")
+        if refresh_token:
+            try:
+                me_res = requests.get(
+                    "https://graph.microsoft.com/v1.0/me",
+                    headers={"Authorization": f"Bearer {access_token}"}, timeout=8,
+                )
+                oaddr = me_res.json().get("mail") or me_res.json().get("userPrincipalName") or "outlook-user"
+                acct_id = f"outlook-{oaddr}"
+                db.upsert_connected_account(acct_id, "outlook", oaddr, "oauth", encrypt_secret(refresh_token))
+                meta = {"id": acct_id, "provider": "outlook", "email": oaddr, "method": "oauth", "status": "connected"}
+                if not any(a["id"] == meta["id"] for a in CONNECTED_ACCOUNTS):
+                    CONNECTED_ACCOUNTS.append(meta)
+                set_live_enabled(True)
+            except Exception:
+                logging.exception("Could not register Outlook account for live sync")
+
         raw_list = await asyncio.to_thread(
             fetch_outlook_live_emails_via_graph, access_token, max_emails=req.max_emails or 5
         )
