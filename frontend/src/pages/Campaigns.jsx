@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import Icon from "../components/Icon";
 
+const API = import.meta.env.VITE_API_URL || "http://localhost:8000";
+
 export default function Campaigns({ campaigns: propCampaigns }) {
   const [data, setData] = useState(propCampaigns || null);
   const [selected, setSelected] = useState(null);
@@ -10,7 +12,7 @@ export default function Campaigns({ campaigns: propCampaigns }) {
       setData(propCampaigns);
       return;
     }
-    fetch("http://localhost:8000/campaigns")
+    fetch(`${API}/campaigns`)
       .then(r => r.json())
       .then(d => setData(d))
       .catch(() => setData([]));

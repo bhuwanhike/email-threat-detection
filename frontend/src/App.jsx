@@ -9,7 +9,7 @@ import Campaigns from "./pages/Campaigns";
 import Settings from "./pages/Settings";
 import Workspaces from "./pages/Workspaces";
 
-const API = "http://localhost:8000";
+const API = import.meta.env.VITE_API_URL || "http://localhost:8000";
 
 export const dash = v => (v === null || v === undefined || v === "" ? "—" : v);
 
@@ -199,7 +199,7 @@ function ScanModal({ onClose, onResult }) {
       await new Promise(r => setTimeout(r, 420));
     }
     try {
-      const res = await fetch("http://localhost:8000/analyze", {
+      const res = await fetch(`${API}/analyze`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ raw: scanText }),
@@ -634,7 +634,7 @@ function ConnectAccountModal({ onClose, onCasesFetched, setNotice }) {
     if (msDevice && msPolling) {
       intervalId = setInterval(async () => {
         try {
-          const res = await fetch("http://localhost:8000/auth/outlook/poll-token", {
+          const res = await fetch(`${API}/auth/outlook/poll-token`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ device_code: msDevice.device_code, max_emails: parseInt(maxEmails) || 5 }),
@@ -668,7 +668,7 @@ function ConnectAccountModal({ onClose, onCasesFetched, setNotice }) {
     setLoading(true);
     setStep("Generating Microsoft OAuth Authorization Link...");
     try {
-      const res = await fetch("http://localhost:8000/auth/outlook/device-code", { method: "POST" });
+      const res = await fetch(`${API}/auth/outlook/device-code`, { method: "POST" });
       if (!res.ok) {
         const errData = await res.json().catch(() => ({}));
         throw new Error(errData.detail || "Failed to start Microsoft Auth");
@@ -697,7 +697,7 @@ function ConnectAccountModal({ onClose, onCasesFetched, setNotice }) {
     setStep(`Connecting via IMAP to ${provider.toUpperCase()} (${targetEmail})...`);
 
     try {
-      const res = await fetch("http://localhost:8000/fetch-live", {
+      const res = await fetch(`${API}/fetch-live`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
       body: JSON.stringify({

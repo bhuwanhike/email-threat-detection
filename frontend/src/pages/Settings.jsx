@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import Icon from "../components/Icon";
 import { dash } from "../App";
 
-const API = "http://localhost:8000";
+const API = import.meta.env.VITE_API_URL || "http://localhost:8000";
 
 export default function Settings({ setNotice }) {
   const [config, setConfig] = useState(null);
