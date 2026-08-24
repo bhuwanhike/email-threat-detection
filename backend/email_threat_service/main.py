@@ -3,6 +3,8 @@ import re
 import json
 import base64
 import hashlib
+import hmac
+import secrets
 import logging
 import ipaddress
 import asyncio
@@ -17,10 +19,13 @@ import dns.resolver
 import whois
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware import Middleware
+from starlette.middleware.base import BaseHTTPMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
 from dotenv import load_dotenv
+import db
 from mail_fetcher import (
     test_connection,
     fetch_unread_emails,
@@ -29,7 +34,120 @@ from mail_fetcher import (
     fetch_outlook_live_emails_via_graph
 )
 
+
+# ── Real-Time Live Sync Engine ────────────────────────────────────────────────
+
+LIVE_STATE = {
+    "enabled": False,
+    "interval": int(os.getenv("LIVE_SYNC_INTERVAL", "60")),
+    "task": None,
+    "started_at": None,
+}
+
+
+def _outlook_refresh_access_token(refresh_token: str) -> str:
+    res = requests.post(
+        "https://login.microsoftonline.com/common/oauth2/v2.0/token",
+        data={
+            "grant_type": "refresh_token",
+            "client_id": os.getenv("AZURE_CLIENT_ID", MS_CLIENT_ID_DEFAULT),
+            "refresh_token": refresh_token,
+            "scope": "https://graph.microsoft.com/Mail.Read https://graph.microsoft.com/User.Read offline_access",
+        },
+        timeout=10,
+    )
+    payload = res.json()
+    if "access_token" not in payload:
+        raise RuntimeError(f"Outlook token refresh failed: {payload.get('error_description', payload)}")
+    return payload["access_token"]
+
+
+async def _sync_account(acct: dict) -> int:
+    """Fetch new unread mail for one account, dedupe, analyze. Returns processed count."""
+    method = acct["method"]
+    secret = decrypt_secret(acct.get("secret_enc") or "")
+
+    if method == "oauth":
+        access_token = _outlook_refresh_access_token(secret)
+        raw_list = await asyncio.to_thread(
+            fetch_outlook_live_emails_via_graph, access_token, 10
+        )
+    else:
+        raw_list = await asyncio.to_thread(
+            fetch_unread_emails, acct["provider"], acct["email"], secret, 10,
+        )
+
+    processed = 0
+    for raw in raw_list:
+        try:
+            msg = email_lib.message_from_string(raw, policy=policy.default)
+            mid = str(msg.get("Message-ID", "")).strip()
+            if mid and db.message_id_seen(mid):
+                continue
+            result = await analyze_email(EmailRequest(raw=raw))
+            processed += 1
+            logging.info("Live sync analyzed %s (%s %s)", result["case_id"], result["score"], result["label"])
+        except Exception:
+            logging.exception("Live sync failed to analyze an email for %s", acct["email"])
+
+    db.set_account_synced(acct["id"], "ok" if processed >= 0 else "empty", processed)
+    return processed
+
+
+async def _live_loop():
+    logging.info("Live sync engine started (every %ss)", LIVE_STATE["interval"])
+    while LIVE_STATE["enabled"]:
+        try:
+            accounts = [a for a in db.list_connected_accounts() if a["enabled"]]
+            for acct in accounts:
+                if not LIVE_STATE["enabled"]:
+                    break
+                try:
+                    n = await _sync_account(acct)
+                    if n:
+                        await dispatch_alert(
+                            alert_type="LIVE_SYNC",
+                            case_id="batch",
+                            score=0,
+                            label=f"{n} new",
+                            detail=f"Auto-sync pulled {n} new email(s) from {acct['email']}",
+                        )
+                except Exception as exc:
+                    logging.error("Live sync error for %s: %s", acct["email"], exc)
+                    db.set_account_synced(acct["id"], f"error: {str(exc)[:80]}")
+        except Exception:
+            logging.exception("Live sync loop iteration failed")
+        await asyncio.sleep(LIVE_STATE["interval"])
+
+
+def set_live_enabled(enabled: bool):
+    LIVE_STATE["enabled"] = enabled
+    if enabled and (LIVE_STATE["task"] is None or LIVE_STATE["task"].done()):
+        LIVE_STATE["task"] = asyncio.create_task(_live_loop())
+        LIVE_STATE["started_at"] = datetime.now(timezone.utc).isoformat()
+        logging.info("Live sync enabled")
+    elif not enabled and LIVE_STATE["task"]:
+        LIVE_STATE["task"].cancel()
+        LIVE_STATE["task"] = None
+        logging.info("Live sync disabled")
+
+
+class LiveToggleRequest(BaseModel):
+    enabled: bool
+
+
+MS_CLIENT_ID_DEFAULT = "14d82eec-204b-4c2f-b7e8-296a70dab67e"
+
 load_dotenv()
+
+try:
+    db.init_db()
+    logging.info("Database schema ready")
+except Exception as exc:
+    logging.error(
+        "DATABASE NOT REACHABLE — set the DATABASE_URL environment variable "
+        "to your cloud Postgres connection string. Details: %s", exc,
+    )
 
 IPINFO_TOKEN = os.getenv("IPINFO_TOKEN", "")
 VT_API_KEY = os.getenv("VT_API_KEY", "")
@@ -40,7 +158,23 @@ logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(message)s",
 )
 
-app = FastAPI(title="Email Threat Detection API")
+async def _catch_all_errors(request, call_next):
+    """Convert any unhandled exception into JSON *inside* the CORS layer so
+    the browser can always read the error instead of blocking it."""
+    try:
+        return await call_next(request)
+    except Exception as exc:
+        logging.exception("Unhandled error on %s %s", request.method, request.url.path)
+        return JSONResponse(
+            status_code=500,
+            content={"detail": f"Internal server error: {exc}"},
+        )
+
+
+app = FastAPI(
+    title="Email Threat Detection API",
+    middleware=[Middleware(BaseHTTPMiddleware, dispatch=_catch_all_errors)],
+)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -48,10 +182,26 @@ app.add_middleware(
         "http://localhost:5174",
         "http://127.0.0.1:5173",
         "http://127.0.0.1:5174",
+        *[
+            o.strip()
+            for o in os.getenv("ALLOWED_ORIGINS", "").split(",")
+            if o.strip()
+        ],
     ],
+    allow_origin_regex=r"https://[a-z0-9-]+\.onrender\.com",
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.on_event("startup")
+async def start_live_sync_if_accounts():
+    try:
+        if any(a["enabled"] for a in db.list_connected_accounts()):
+            set_live_enabled(True)
+    except Exception:
+        logging.exception("Live sync autostart failed")
+
 
 # ── Account Connection & Ingestion Models ────────────────────────────────────
 
@@ -70,7 +220,6 @@ class FetchLiveRequest(BaseModel):
     email: str
     password: str
     max_emails: Optional[int] = 5
-    use_demo: Optional[bool] = False
     custom_host: Optional[str] = None
     custom_port: Optional[int] = 993
 
@@ -80,105 +229,33 @@ class ResolveCaseRequest(BaseModel):
 
 CONNECTED_ACCOUNTS = []
 
-CASES_DB = [
-    {
-        "id": "INC-2481",
-        "sender": "accounts-payable@micros0ft.com",
-        "subject": "Urgent: invoice overdue - action required",
-        "time": "12m ago",
-        "score": 94,
-        "label": "CRITICAL",
-        "accent": "red",
-        "initials": "AP",
-        "raw_data": {
-            "from": "accounts-payable@micros0ft.com",
-            "subject": "Urgent: invoice overdue - action required",
-            "score": 94,
-            "label": "CRITICAL",
-            "accent": "red",
-            "flags": ["Phishing keywords: invoice, urgent, overdue", "Lookalike domain: micros0ft.com", "SPF softfail"],
-            "ips": ["185.23.45.10"],
-            "urls": ["http://micros0ft.com/verify-invoice"],
-            "attachments": [{"filename": "Invoice_8831.xlsm", "dangerous": True, "extension": ".xlsm"}],
-            "geo": [{"ip": "185.23.45.10", "city": "Agra", "region": "Uttar Pradesh", "country": "IN", "org": "AS12345 BulkHosting", "lat": 27.18, "lng": 78.01, "vpn": True, "tor": False}]
-        }
-    },
-    {
-        "id": "INC-2479",
-        "sender": "ceo.office@northstar-holdings.co",
-        "subject": "Confidential acquisition request",
-        "time": "38m ago",
-        "score": 81,
-        "label": "HIGH",
-        "accent": "orange",
-        "initials": "CO",
-        "raw_data": {
-            "from": "ceo.office@northstar-holdings.co",
-            "subject": "Confidential acquisition request",
-            "score": 81,
-            "label": "HIGH",
-            "accent": "orange",
-            "flags": ["BEC pattern: payment_diversion", "Reply-To domain mismatch"],
-            "ips": ["41.58.120.77"],
-            "urls": ["http://northstar-holdings.co/wire"],
-            "attachments": [],
-            "geo": [{"ip": "41.58.120.77", "city": "Lagos", "region": "Lagos State", "country": "NG", "org": "AS37148 MainOne", "lat": 6.52, "lng": 3.38, "vpn": False, "tor": False}]
-        }
-    },
-    {
-        "id": "INC-2476",
-        "sender": "support@cloud-storage-verify.net",
-        "subject": "Your storage is almost full",
-        "time": "1h ago",
-        "score": 67,
-        "label": "MEDIUM",
-        "accent": "yellow",
-        "initials": "CS",
-        "raw_data": {
-            "from": "support@cloud-storage-verify.net",
-            "subject": "Your storage is almost full",
-            "score": 67,
-            "label": "MEDIUM",
-            "accent": "yellow",
-            "flags": ["1 URL(s) in body", "Domain only 6 days old"],
-            "ips": ["95.216.44.22"],
-            "urls": ["http://cloud-storage-verify.net/upgrade"],
-            "attachments": [],
-            "geo": [{"ip": "95.216.44.22", "city": "Frankfurt", "region": "Hesse", "country": "DE", "org": "AS24940 Hetzner", "lat": 50.11, "lng": 8.68, "vpn": False, "tor": False}]
-        }
-    },
-    {
-        "id": "INC-2472",
-        "sender": "newsletter@security-weekly.com",
-        "subject": "Weekly threat briefing",
-        "time": "2h ago",
-        "score": 12,
-        "label": "LOW",
-        "accent": "green",
-        "initials": "NW",
-        "raw_data": {
-            "from": "newsletter@security-weekly.com",
-            "subject": "Weekly threat briefing",
-            "score": 12,
-            "label": "LOW",
-            "accent": "green",
-            "flags": [],
-            "ips": ["203.0.113.10"],
-            "urls": [],
-            "attachments": [],
-            "geo": [{"ip": "203.0.113.10", "city": "San Francisco", "region": "CA", "country": "US", "org": "AS15169 Google LLC", "lat": 37.77, "lng": -122.41, "vpn": False, "tor": False}]
-        }
-    }
-]
 
-CASE_HISTORY_DB = [
-    {"id": "INC-2455", "sender": "payroll@fake-hr-portal.com", "subject": "Payroll update required", "closed": "22 Aug 2026", "score": 91, "label": "CRITICAL", "accent": "red", "resolution": "Blocked · Reported to IT", "analyst": "AS"},
-    {"id": "INC-2441", "sender": "cfo@acme-corp-finance.net", "subject": "Wire transfer authorization", "closed": "21 Aug 2026", "score": 87, "label": "CRITICAL", "accent": "red", "resolution": "Blocked · Legal notified", "analyst": "RK"},
-    {"id": "INC-2430", "sender": "support@dropbox-verify.co", "subject": "Your Dropbox storage is full", "closed": "20 Aug 2026", "score": 63, "label": "MEDIUM", "accent": "yellow", "resolution": "Quarantined · User warned", "analyst": "AS"},
-    {"id": "INC-2418", "sender": "noreply@linkedin-jobs.net", "subject": "You have a new job offer", "closed": "19 Aug 2026", "score": 44, "label": "MEDIUM", "accent": "yellow", "resolution": "Marked suspicious · Monitored", "analyst": "PD"},
-    {"id": "INC-2400", "sender": "newsletter@techcrunch.com", "subject": "Weekly tech digest", "closed": "18 Aug 2026", "score": 6, "label": "LOW", "accent": "green", "resolution": "Cleared · Legitimate", "analyst": "AS"},
-    {"id": "INC-2388", "sender": "billing@aws-invoice-alert.com", "subject": "Your AWS bill is ready", "closed": "17 Aug 2026", "score": 79, "label": "HIGH", "accent": "orange", "resolution": "Blocked · Domain reported", "analyst": "RK"},
-]
+# ── Secret obfuscation for stored mail credentials (stdlib stream cipher) ────
+
+_SECRET_KEY = hashlib.sha256(
+    os.getenv("SECRET_KEY", "mailshield-local-dev-key").encode()
+).digest()
+
+
+def _keystream(n: int) -> bytes:
+    out, counter = b"", 0
+    while len(out) < n:
+        out += hmac.new(_SECRET_KEY, counter.to_bytes(8, "big"), hashlib.sha256).digest()
+        counter += 1
+    return out[:n]
+
+
+def encrypt_secret(plain: str) -> str:
+    raw = plain.encode()
+    xored = bytes(b ^ k for b, k in zip(raw, _keystream(len(raw))))
+    return base64.b64encode(xored).decode()
+
+
+def decrypt_secret(enc: str) -> str:
+    if not enc:
+        return ""
+    xored = base64.b64decode(enc.encode())
+    return bytes(b ^ k for b, k in zip(xored, _keystream(len(xored)))).decode(errors="replace")
 
 
 SUSPICIOUS_ASNS = {
@@ -187,6 +264,26 @@ SUSPICIOUS_ASNS = {
     "AS7922", "AS209", "AS701",                              # residential proxies (common abuse)
 }
 TOR_EXIT_ASNS = {"AS60729", "AS4224", "AS50628"}
+
+THREAT_SIGNALS = {
+    "credential_harvest": ([
+        "verify your account", "confirm your identity", "validate your",
+        "reset your password", "login to", "sign in to", "unusual activity",
+        "security alert", "account locked", "suspended", "update your billing",
+    ], 11),
+    "urgency_pressure": ([
+        "urgent", "immediately", "action required", "limited time", "expires",
+        "final notice", "act now", "within 24 hours", "last chance", "asap",
+    ], 9),
+    "financial_lure": ([
+        "invoice", "payment", "wire transfer", "bank account", "overdue",
+        "remittance", "swift", "iban", "refund", "gift card", "crypto",
+    ], 8),
+    "authority_threat": ([
+        "legal action", "lawsuit", "law enforcement", "irs", "police",
+        "unauthorized access", "deactivated", "permanently delete", "penalty",
+    ], 10),
+}
 
 PHISHING_KEYWORDS = [
     "urgent", "verify", "suspended", "account", "click here", "confirm",
@@ -231,45 +328,6 @@ PRIVACY_CONFIG = {
 # ── SSE Real-Time Alert Queue (SIH Requirement: Real-time alerts) ────────────
 
 ALERT_SUBSCRIBERS: list[asyncio.Queue] = []
-CAMPAIGN_DB: list[dict] = [
-    {
-        "id": "CAMP-INVOICE-01",
-        "name": "INVOICE-STORM · Microsoft Lookalike BEC",
-        "risk": "CRITICAL",
-        "accent": "red",
-        "count": 14,
-        "iocs": ["micros0ft.com", "micros0ft-billing.com", "185.23.45.10"],
-        "first_seen": "18 Aug 2026",
-        "last_seen": "24 Aug 2026",
-        "ttps": ["T1566.001", "T1036.005", "T1078"],
-    },
-    {
-        "id": "CAMP-WIRE-02",
-        "name": "CEO-WIRE-01 · Executive Impersonation",
-        "risk": "HIGH",
-        "accent": "orange",
-        "count": 6,
-        "iocs": ["northstar-holdings.co", "41.58.120.77"],
-        "first_seen": "20 Aug 2026",
-        "last_seen": "23 Aug 2026",
-        "ttps": ["T1566.002", "T1534", "T1657"],
-    },
-    {
-        "id": "CAMP-CLOUD-03",
-        "name": "CLOUD-LURE-22 · Commodity Phishing Kit",
-        "risk": "MEDIUM",
-        "accent": "yellow",
-        "count": 200,
-        "iocs": ["cloud-storage-verify.net", "cloud-verify-storage.net", "95.216.44.22"],
-        "first_seen": "15 Aug 2026",
-        "last_seen": "23 Aug 2026",
-        "ttps": ["T1566.002", "T1598.003"],
-    },
-]
-
-
-class EmailRequest(BaseModel):
-    raw: str
 
 
 # ── Evidence & Privacy Helpers ───────────────────────────────────────────────
@@ -379,7 +437,7 @@ def analyze_urls(urls: List[str]) -> List[dict]:
                 info["obfuscated"] = True
                 info["techniques"].append("Raw IP URL (no domain)")
             shorteners = ["bit.ly", "tinyurl.com", "t.co", "goo.gl", "is.gd", "buff.ly", "ow.ly", "adf.ly", "shorte.st", "cutt.ly", "rb.gy"]
-            if any(s in host for s in shorteners):
+            if any(host == s or host.endswith("." + s) for s in shorteners):
                 info["shortened"] = True
                 info["obfuscated"] = True
                 info["techniques"].append("URL shortener used (hides destination)")
@@ -588,48 +646,129 @@ def cluster_into_campaign(
     urls: List[str],
     bec_patterns: dict,
     subject: str,
+    score_label: str = "MEDIUM",
+    score_accent: str = "yellow",
+    ttp_ids: Optional[List[str]] = None,
 ) -> dict:
-    matched = None
-    for camp in CAMPAIGN_DB:
-        ioc_list = [i.lower() for i in camp["iocs"]]
-        score = 0
-        if from_domain and from_domain.lower() in ioc_list:
-            score += 3
-        for ip in ips:
-            if ip in ioc_list:
-                score += 2
-        for u in urls:
-            from urllib.parse import urlparse
-            uh = urlparse(u).hostname or ""
-            if uh.lower() in ioc_list:
-                score += 2
-        for t in camp.get("ttps", []):
-            for bp in bec_patterns.keys():
-                if bp.upper() in t or t.split(".")[-1][:3] in bp.upper():
-                    score += 1
-        if score >= 2:
-            matched = camp
-            break
+    from urllib.parse import urlparse
+    url_hosts = [(urlparse(u).hostname or "").lower() for u in urls if urlparse(u).hostname]
+    ioc_values = [v for v in [from_domain.lower()] + ips + url_hosts if v]
+
+    matched = db.match_campaign(ioc_values)
+    ttp_ids = ttp_ids or []
+
     if matched:
+        db.update_campaign_hit(matched["id"], ioc_values, ttp_ids)
+        count = matched["count"] + 1
+        window = f"{matched['first_seen'].strftime('%d %b %Y')} – {datetime.now(timezone.utc).strftime('%d %b %Y')}"
         return {
             "matched": True,
             "campaign_id": matched["id"],
             "campaign_name": matched["name"],
             "campaign_risk": matched["risk"],
             "campaign_accent": matched["accent"],
-            "similar_emails_in_campaign": matched["count"],
-            "campaign_window": f"{matched['first_seen']} – {matched['last_seen']}",
+            "similar_emails_in_campaign": count,
+            "campaign_window": window,
         }
-    new_id = f"CAMP-NEW-{hashlib.md5((subject+from_domain).encode()).hexdigest()[:5].upper()}"
+
+    new_id = f"CAMP-{hashlib.md5(((subject or '') + (from_domain or '')).encode()).hexdigest()[:6].upper()}"
+    name = f"New campaign cluster · {from_domain or 'unknown sender'}"
+    db.create_campaign(new_id, name, score_label, score_accent, ioc_values, list(set(ttp_ids)))
     return {
         "matched": False,
         "campaign_id": new_id,
-        "campaign_name": f"New campaign cluster · {from_domain or 'unknown'}",
-        "campaign_risk": "MEDIUM",
-        "campaign_accent": "yellow",
+        "campaign_name": name,
+        "campaign_risk": score_label,
+        "campaign_accent": score_accent,
         "similar_emails_in_campaign": 1,
-        "campaign_window": "First seen today",
+        "campaign_window": f"First seen {datetime.now(timezone.utc).strftime('%d %b %Y')}",
     }
+
+
+# ── MITRE ATT&CK Technique Derivation (from real detection flags) ────────────
+
+# ── Threat-domain classification (global hub taxonomy) ───────────────────────
+
+CREDENTIAL_KEYWORDS = (
+    "login", "log in", "password", "credentials", "verify your account",
+    "confirm your account", "sign in", "reset your password", "unlock",
+    "validate your identity", "security check",
+)
+
+
+def classify_workspace(result: dict) -> str:
+    """Map an analyzed email to one global threat-domain workspace slug."""
+    bec = result.get("bec") or {}
+    flags = " ".join((f or "").lower() for f in result.get("flags", []))
+    attachments = result.get("attachments") or []
+
+    if bec:
+        return "bec"
+    if any(a.get("dangerous") for a in attachments) or "dangerous attachment" in flags:
+        return "malware"
+
+    spoofed = result.get("display_name_spoofing")
+    if spoofed or "lookalike domain" in flags or "exec_impersonation" in (bec or {}) \
+            or "reply-to domain mismatch" in flags:
+        return "impersonation"
+
+    origin = (result.get("origin_attribution") or {}).get("origin_type")
+    if origin == "compromised_account":
+        return "account"
+
+    urls = result.get("urls") or []
+    if any(k in flags for k in CREDENTIAL_KEYWORDS) and urls:
+        return "phishing"
+    if "phishing keywords" in flags:
+        return "phishing"
+
+    if (result.get("score") or 0) < 25 and not urls:
+        return "spam"
+    return "general"
+
+
+def derive_ttps(flags: List[str], bec: dict, origin_attribution: dict) -> List[dict]:
+    found: Dict[str, dict] = {}
+
+    def add(tid, name, detail):
+        if tid not in found:
+            found[tid] = {"id": tid, "name": name, "detail": detail}
+
+    joined = " ".join(f.lower() for f in flags)
+
+    if any(
+        "link" in f.lower() or "url" in f.lower() or "obfuscation" in f.lower()
+        or "tld" in f.lower() or "shortened" in f.lower() or "raw-ip" in f.lower()
+        for f in flags
+    ):
+        add("T1566.002", "Spearphishing Link", "Email body contains links to potential lure pages")
+
+    if "dangerous attachment" in joined or "double-extension disguise" in joined:
+        add("T1566.001", "Spearphishing Attachment", "Malicious file attachment used as initial access vector")
+        add("T1204.002", "User Execution: Malicious File", "Recipient may open the malicious attachment")
+    if "double-extension disguise" in joined:
+        found["T1566.001"]["detail"] = "Attachment uses a double extension to disguise an executable payload"
+
+    if "lookalike domain" in joined or "display-name spoof" in joined or "no mx records" in joined or "homoglyph" in joined:
+        add("T1036.005", "Match Legitimate Name or Location", "Sender masquerades as a legitimate brand or domain")
+
+    if "payment_diversion" in bec or "invoice_fraud" in bec:
+        add("T1657", "Financial Theft and Impact", "BEC pattern aimed at diverting payments")
+    if "exec_impersonation" in bec:
+        add("T1534", "Internal Spearphishing", "Executive impersonation to trigger fraudulent actions")
+    if "credential_harvest" in bec or "insecure http link" in joined:
+        add("T1598.003", "Phishing for Information: Credential Harvesting", "Lure designed to capture user credentials")
+
+    for f in flags:
+        fl = f.lower()
+        if "tor exit node" in fl or "vpn/hosting asn" in fl:
+            add("T1090", "Proxy", "Traffic routed through anonymizing infrastructure")
+            break
+
+    if origin_attribution.get("origin_type") == "compromised_account":
+        add("T1078", "Valid Accounts", "Legitimate account likely compromised and abused")
+
+    return list(found.values())
 
 
 # ── SSE Alert Dispatcher ─────────────────────────────────────────────────────
@@ -686,18 +825,46 @@ def extract_relay_hops(msg) -> list:
     received = msg.get_all("Received") or []
     hops = []
     for r in received:
-        ip_match = re.search(r"\[(\d{1,3}(?:\.\d{1,3}){3})\]", r)
-        host_match = re.search(r"from\s+(\S+)", r)
+        rs = r.strip()
+        ip_match = re.search(r"\[(\d{1,3}(?:\.\d{1,3}){3})\]", rs)
+        from_match = re.search(r"^from\s+(\S+)", rs)
+        by_match = re.search(r"\bby\s+(\S+?)(?:\s+(?:with|using|id|for|;)|$|;)", rs)
         hops.append({
-            "raw": r.strip()[:120],
+            "raw": rs[:160],
             "ip": ip_match.group(1) if ip_match else None,
-            "host": host_match.group(1) if host_match else "unknown",
+            "host": (from_match.group(1).rstrip(".") if from_match
+                     else (by_match.group(1).rstrip(".") if by_match else "unknown")),
+            "by": by_match.group(1).rstrip(".") if by_match else None,
         })
     return hops
 
 
+def collect_origin_candidates(msg, hops: List[dict]) -> List[str]:
+    """Priority-ordered public IPs most likely to be the true sending host:
+    1. Explicit origin headers (X-Originating-IP etc.)
+    2. Received chain walked bottom-up (last hop sits closest to the sender)
+    Deterministic order — no set() shuffling."""
+    candidates: List[str] = []
+
+    def _push(ip):
+        if ip and is_valid_public_ip(ip) and ip not in candidates:
+            candidates.append(ip)
+
+    for h in ("X-Originating-IP", "X-Real-IP", "X-Sender-IP", "Originating-Client-IP"):
+        val = msg.get(h)
+        if val:
+            for m in re.findall(r"\[(\d{1,3}(?:\.\d{1,3}){3})\]|\b(\d{1,3}(?:\.\d{1,3}){3})\b", str(val)):
+                _push(m[0] or m[1])
+    for hop in reversed(hops):
+        _push(hop.get("ip"))
+    return candidates[:6]
+
+
 def extract_urls(text: str) -> list:
     return re.findall(r"https?://[^\s\)\"'<>]+", text)
+
+
+DECEPTIVE_FINAL_EXTS = {".exe", ".scr", ".pif", ".com", ".bat", ".cmd", ".js", ".vbs", ".lnk"}
 
 
 def extract_attachments(msg) -> list:
@@ -707,11 +874,14 @@ def extract_attachments(msg) -> list:
             filename = part.get_filename()
             if filename:
                 ext = os.path.splitext(filename)[1].lower()
+                parts = filename.lower().split(".")
+                double_extension = len(parts) >= 3 and f".{parts[-1]}" in DECEPTIVE_FINAL_EXTS
                 attachments.append({
                     "filename": filename,
                     "content_type": part.get_content_type(),
                     "extension": ext,
                     "dangerous": ext in DANGEROUS_EXTENSIONS,
+                    "double_extension": double_extension,
                 })
     return attachments
 
@@ -741,15 +911,17 @@ def dns_mx_lookup(domain: str) -> dict:
     return result
 
 
-def nlp_score(subject: str, body: str, auth: dict, from_addr: str, reply_to: str):
+def nlp_score(subject: str, body: str, auth: dict, from_addr: str, reply_to: str, url_analysis=None):
     score = 0
     flags = []
     combined = (subject + " " + body).lower()
 
-    keyword_hits = [kw for kw in PHISHING_KEYWORDS if kw in combined]
-    score += min(len(keyword_hits) * 8, 40)
-    if keyword_hits:
-        flags.append(f"Phishing keywords: {', '.join(keyword_hits[:5])}")
+    # ── Weighted content-signal categories (capped per category) ─────────────
+    for cat, (kws, weight) in THREAT_SIGNALS.items():
+        hits = [kw for kw in kws if kw in combined]
+        if hits:
+            score += min(len(hits) * weight, weight * 3)
+            flags.append(f"{cat.replace('_', ' ').title()} language: {', '.join(hits[:4])}")
 
     if auth["spf"] == "fail":
         score += 20
@@ -776,10 +948,23 @@ def nlp_score(subject: str, body: str, auth: dict, from_addr: str, reply_to: str
             flags.append(f"Lookalike domain: {from_addr}")
             break
 
-    urls = extract_urls(body)
-    if urls:
-        score += min(len(urls) * 5, 15)
-        flags.append(f"{len(urls)} URL(s) in body")
+    # ── Link-based signals from the URL analysis pass ────────────────────────
+    ua_list = url_analysis or []
+    if ua_list:
+        score += min(len(ua_list) * 4, 12)
+        flags.append(f"{len(ua_list)} link(s) in body")
+    if any(u["url"].startswith("http://") for u in ua_list):
+        score += 8
+        flags.append("Insecure HTTP link (credentials could be intercepted)")
+    if any(u.get("shortened") for u in ua_list):
+        score += 6
+        flags.append("Shortened URLs hide true destination")
+    if any(u.get("has_ip") for u in ua_list):
+        score += 8
+        flags.append("Raw-IP URLs bypass domain reputation")
+    if any(u.get("suspicious_tld") for u in ua_list):
+        score += 8
+        flags.append("Suspicious TLD link(s)")
 
     score = min(score, 100)
     label, accent = _label(score)
@@ -796,30 +981,72 @@ def _label(score: int):
     return "LOW", "green"
 
 
+GEO_CACHE: Dict[str, dict] = {}
+
+
 def geoip(ip: str) -> dict:
+    """Geolocate a public IP. Uses ipinfo.io when IPINFO_TOKEN is set,
+    falls back to the token-free ip-api.com service, caches every lookup."""
+    empty = {"ip": ip, "city": "", "region": "", "country": "", "org": "",
+             "lat": 0, "lng": 0, "vpn": False, "tor": False, "source": ""}
     if not is_valid_public_ip(ip):
-        return {"ip": ip, "city": "Private", "region": "", "country": "", "org": "", "lat": 0, "lng": 0, "vpn": False, "tor": False}
+        return {**empty, "city": "Private"}
+    if ip in GEO_CACHE:
+        return GEO_CACHE[ip]
+
+    def _finish(d: dict, source: str) -> dict:
+        loc = str(d.get("loc") or "0,0").split(",")
+        org = d.get("org", "") or ""
+        asn = org.split(" ")[0] if org else ""
+        res = {
+            "ip": ip,
+            "city": d.get("city") or "Unknown",
+            "region": d.get("region") or "",
+            "country": d.get("country") or "",
+            "org": org,
+            "timezone": d.get("timezone") or "",
+            "lat": float(loc[0]) if len(loc) == 2 else 0,
+            "lng": float(loc[1]) if len(loc) == 2 else 0,
+            "vpn": asn in SUSPICIOUS_ASNS,
+            "tor": asn in TOR_EXIT_ASNS,
+            "source": source,
+        }
+        GEO_CACHE[ip] = res
+        return res
+
     try:
-        r = requests.get(f"https://ipinfo.io/{ip}?token={IPINFO_TOKEN}", timeout=5)
+        url = f"https://ipinfo.io/{ip}/json" + (f"?token={IPINFO_TOKEN}" if IPINFO_TOKEN else "")
+        r = requests.get(url, timeout=5)
         if r.status_code == 200:
             d = r.json()
-            loc = d.get("loc", "0,0").split(",")
-            org = d.get("org", "")
-            asn = org.split(" ")[0] if org else ""
-            return {
-                "ip": ip,
-                "city": d.get("city", "Unknown"),
-                "region": d.get("region", ""),
-                "country": d.get("country", ""),
-                "org": org,
-                "lat": float(loc[0]) if len(loc) == 2 else 0,
-                "lng": float(loc[1]) if len(loc) == 2 else 0,
-                "vpn": asn in SUSPICIOUS_ASNS,
-                "tor": asn in TOR_EXIT_ASNS,
-            }
+            if "error" not in d:
+                return _finish(d, "ipinfo")
     except requests.RequestException:
         pass
-    return {"ip": ip, "city": "Unknown", "region": "", "country": "", "org": "", "lat": 0, "lng": 0, "vpn": False, "tor": False}
+
+    # Token-free fallback provider
+    try:
+        r = requests.get(
+            "http://ip-api.com/json/" + ip,
+            params={"fields": "status,message,country,countryCode,regionName,city,timezone,isp,org,as,lat,lon"},
+            timeout=6,
+        )
+        if r.status_code == 200:
+            d = r.json()
+            if d.get("status") == "success":
+                return _finish({
+                    "city": d.get("city"),
+                    "region": d.get("regionName"),
+                    "country": d.get("countryCode"),
+                    "org": d.get("as") or d.get("org"),
+                    "loc": f"{d.get('lat')},{d.get('lon')}",
+                    "timezone": d.get("timezone"),
+                }, "ip-api")
+    except requests.RequestException:
+        pass
+
+    logging.warning("Geolocation failed for %s (both providers)", ip)
+    return {**empty, "city": "Unknown"}
 
 
 def vt_check_domain(domain: str) -> dict:
@@ -878,8 +1105,6 @@ def audit_log(event: str, data: dict):
 
 # ── Routes ───────────────────────────────────────────────────────────────────
 
-ANALYSIS_CACHE: Dict[str, dict] = {}
-
 
 @app.post("/analyze")
 async def analyze_email(req: EmailRequest):
@@ -920,23 +1145,35 @@ async def analyze_email(req: EmailRequest):
 
     auth = parse_auth_results(msg)
     hops = extract_relay_hops(msg)
-    ips = extract_ips(req.raw)
+    ips = collect_origin_candidates(msg, hops) or extract_ips(req.raw)
     urls = extract_urls(body)
+    url_analysis = analyze_urls(urls)
     attachments = extract_attachments(msg)
     bec = classify_bec(subject, body)
 
-    score, label, accent, flags = nlp_score(subject, body, auth, from_addr, reply_to)
+    score, label, accent, flags = nlp_score(subject, body, auth, from_addr, reply_to, url_analysis=url_analysis)
 
     dangerous_attachments = [a for a in attachments if a["dangerous"]]
     if dangerous_attachments:
         score = min(score + 15, 100)
         flags.append(f"Dangerous attachment: {dangerous_attachments[0]['filename']}")
 
+    disguised = [a for a in attachments if a.get("double_extension")]
+    if disguised:
+        score = min(score + 20, 100)
+        flags.append(f"Double-extension disguise: {disguised[0]['filename']}")
+
     if bec:
         score = min(score + 10, 100)
         flags.append(f"BEC pattern: {', '.join(bec.keys())}")
 
-    geo_results = [geoip(ip) for ip in ips[:4]]
+    geo_results = [geoip(ip) for ip in ips]
+    geo_by_ip = {g["ip"]: g for g in geo_results}
+    for h in hops:
+        if h.get("ip"):
+            h["geo"] = geo_by_ip.get(h["ip"])
+    if hops and not any(is_valid_public_ip(h.get("ip")) for h in hops):
+        flags.append("No geolocatable public relay — internal/private relay chain")
 
     for g in geo_results:
         if g.get("tor"):
@@ -972,10 +1209,8 @@ async def analyze_email(req: EmailRequest):
         for tech in display_spoof.get("techniques", []):
             flags.append(f"Display-name spoof: {tech}")
 
-    url_analysis = analyze_urls(urls)
     for ua in url_analysis:
         if ua.get("obfuscated"):
-            score = min(score + 6, 100)
             for tech in ua.get("techniques", []):
                 flags.append(f"URL obfuscation ({ua['url'][:50]}…): {tech}")
 
@@ -984,6 +1219,10 @@ async def analyze_email(req: EmailRequest):
     reply_to_mismatch = bool(reply_domain and from_d_match and reply_domain.group(1) != from_d_match.group(1))
 
     originating_ip = find_originating_ip(hops, ips)
+    if originating_ip.get("ip"):
+        og = next((g for g in geo_results if g["ip"] == originating_ip["ip"]), None)
+        if og:
+            originating_ip["geo"] = og
     origin_attribution = attribute_origin_type(
         auth, geo_results, whois_data, dns_data, vt_domain,
         reply_to_mismatch, display_spoof, hops
@@ -998,7 +1237,12 @@ async def analyze_email(req: EmailRequest):
         from_addr, from_domain, reply_to, return_path, ips, urls, hops
     )
 
-    campaign = cluster_into_campaign(from_domain, ips, urls, bec, subject)
+    derived_ttps = derive_ttps(flags, bec, origin_attribution)
+    campaign = cluster_into_campaign(
+        from_domain, ips, urls, bec, subject,
+        score_label=_label(score)[0], score_accent=_label(score)[1],
+        ttp_ids=[t["id"] for t in derived_ttps],
+    )
 
     if campaign.get("matched"):
         flags.append(f"Matched campaign: {campaign['campaign_name']} ({campaign['similar_emails_in_campaign']} emails)")
@@ -1007,7 +1251,13 @@ async def analyze_email(req: EmailRequest):
 
     label, accent = _label(score)
 
-    case_id = f"INC-{2500 + len(ANALYSIS_CACHE) + len(CASES_DB)}"
+    recommendations = _build_recommendations(score, origin_attribution, campaign, flags)
+
+    case_id = db.next_case_id()
+    addr_match = re.search(r"([\w.\-+]+)@", from_addr)
+    local_part = addr_match.group(1) if addr_match else "em"
+    initials = (re.sub(r"[^a-z0-9]", "", local_part.lower())[:2] or "em").upper()
+
     result = {
         "case_id": case_id,
         "subject": subject,
@@ -1038,6 +1288,8 @@ async def analyze_email(req: EmailRequest):
         "dns": dns_data,
         "correlation_graph": correlation_graph,
         "campaign": campaign,
+        "ttps": derived_ttps,
+        "recommendations": recommendations,
         "evidence_hash": evidence_hash,
         "retention_days": PRIVACY_CONFIG["retention_days"],
         "mask_pii_applied": PRIVACY_CONFIG["mask_pii"],
@@ -1045,7 +1297,64 @@ async def analyze_email(req: EmailRequest):
         "analyzed_at": datetime.now(timezone.utc).isoformat(),
     }
 
-    ANALYSIS_CACHE[case_id] = result
+    # ── Persist to PostgreSQL ────────────────────────────────────────────────
+    try:
+        ws_slug = classify_workspace(result)
+        result["ws_slug"] = ws_slug
+        db.insert_case(case_id, from_addr, subject, score, label, accent, initials,
+                       campaign.get("campaign_id"), result, ws_slug=ws_slug)
+        db.insert_case_ttps(case_id, derived_ttps)
+
+        # IOCs observed in this email
+        if from_domain:
+            vt_flags = vt_domain.get("malicious", 0) if isinstance(vt_domain, dict) else 0
+            ioc_status = "MALICIOUS" if vt_flags > 0 else ("SUSPICIOUS" if dns_data.get("suspicious") else "WATCHLIST")
+            ioc_accent = "red" if vt_flags > 0 else ("orange" if dns_data.get("suspicious") else "yellow")
+            threat_desc = "Sender domain · lookalike/spoof risk" if any("lookalike" in f.lower() for f in flags) else "Sender domain"
+            db.upsert_ioc("DOMAIN", from_domain, threat_desc, vt_flags, ioc_status, ioc_accent)
+
+        for g in geo_results:
+            if not is_valid_public_ip(g.get("ip")):
+                continue
+            if g.get("tor"):
+                st, ac, desc = "MALICIOUS", "red", f"TOR exit node · {g.get('city') or 'Unknown'}"
+            elif vt_domain.get("malicious", 0) > 0:
+                st, ac, desc = "SUSPICIOUS", "orange", f"Flagged infrastructure · {g.get('city') or 'Unknown'}"
+            elif g.get("vpn"):
+                st, ac, desc = "SUSPICIOUS", "orange", f"Hosting/VPN ASN · {g.get('org') or ''}"
+            else:
+                st, ac, desc = "WATCHLIST", "yellow", f"{g.get('city') or 'Unknown'}, {g.get('country') or ''}"
+            db.upsert_ioc("IP", g["ip"], desc, vt_domain.get("malicious", 0) if st != "WATCHLIST" else 0, st, ac)
+
+        for ua in url_analysis:
+            u = ua.get("url")
+            if not u:
+                continue
+            mal = next((v.get("malicious", 0) for v in vt_urls if v.get("url") == u), 0)
+            obf = bool(ua.get("obfuscated"))
+            st = "MALICIOUS" if mal > 0 else ("SUSPICIOUS" if obf or ua.get("suspicious_tld") else "WATCHLIST")
+            ac = "red" if st == "MALICIOUS" else ("orange" if st == "SUSPICIOUS" else "yellow")
+            db.upsert_ioc("URL", u, "; ".join(ua.get("techniques", [])) or "URL found in body", mal, st, ac)
+
+        # Infrastructure nodes from geolocation results
+        for g in geo_results:
+            if not g.get("ip") or not is_valid_public_ip(g.get("ip")):
+                continue
+            if g.get("tor"):
+                ntype, nrisk = "PROXY", "red"
+            elif g.get("vpn"):
+                ntype, nrisk = "VPS", "orange"
+            else:
+                ntype, nrisk = "LEGIT", "green"
+            db.upsert_infra(
+                ip=g["ip"], host=None, city=g.get("city") or None,
+                country=g.get("country") or None, org=g.get("org") or None,
+                lat=g.get("lat") or 0, lng=g.get("lng") or 0,
+                node_type=ntype, risk=nrisk,
+                vpn=bool(g.get("vpn")), tor=bool(g.get("tor")),
+            )
+    except Exception as e:
+        logging.error("Database persistence failed for %s: %s", case_id, e)
 
     audit_log("EMAIL_ANALYZED", {
         "case_id": case_id,
@@ -1081,26 +1390,30 @@ async def analyze_email(req: EmailRequest):
 
 @app.get("/report/{case_id}")
 def get_report(case_id: str, full: bool = False):
-    """Return a structured forensic intelligence report. Uses cached analysis if available,
-    otherwise pulls from static CASES_DB. When full=true, includes inline evidence, graph, and IOCs."""
+    """Return a structured forensic intelligence report built from the stored
+    analysis record. When full=true, includes inline evidence, graph, and IOCs."""
 
-    analysis = ANALYSIS_CACHE.get(case_id)
-    case_static = next((c for c in CASES_DB if c["id"] == case_id), None)
-    raw_data = case_static.get("raw_data") if case_static else {}
+    row = db.get_case_row(case_id)
+    if not row or not row.get("analysis"):
+        raise HTTPException(status_code=404, detail="Case/analysis not found")
 
-    subject = analysis.get("subject") or case_static.get("subject") or "Unknown"
-    sender = analysis.get("from") or case_static.get("sender") or "Unknown"
-    score = analysis.get("score") or case_static.get("score") or 0
-    label = analysis.get("label") or case_static.get("label") or "LOW"
-    accent = analysis.get("accent") or case_static.get("accent") or "green"
+    analysis = row["analysis"]
+    if isinstance(analysis, str):
+        analysis = json.loads(analysis)
+
+    subject = analysis.get("subject") or row.get("subject") or "Unknown"
+    sender = analysis.get("from") or row.get("sender") or "Unknown"
+    score = analysis.get("score") or row.get("score") or 0
+    label = analysis.get("label") or row.get("label") or "LOW"
+    accent = analysis.get("accent") or row.get("accent") or "green"
 
     auth = analysis.get("auth") or {}
     hops = analysis.get("hops") or []
-    geo = analysis.get("geo") or (raw_data.get("geo") if isinstance(raw_data, dict) else [])
+    geo = analysis.get("geo") or []
     bec = analysis.get("bec") or {}
-    flags = analysis.get("flags") or (raw_data.get("flags") if isinstance(raw_data, dict) else [])
-    attachments = analysis.get("attachments") or (raw_data.get("attachments") if isinstance(raw_data, dict) else [])
-    urls = analysis.get("urls") or (raw_data.get("urls") if isinstance(raw_data, dict) else [])
+    flags = analysis.get("flags") or []
+    attachments = analysis.get("attachments") or []
+    urls = analysis.get("urls") or []
     vt_domain = analysis.get("vt_domain") or {}
     whois_data = analysis.get("whois") or {}
     dns_data = analysis.get("dns") or {}
@@ -1116,7 +1429,7 @@ def get_report(case_id: str, full: bool = False):
         "report_type": "FORENSIC_INTELLIGENCE_REPORT",
         "case_id": case_id,
         "generated_at": datetime.now(timezone.utc).isoformat(),
-        "platform": "trace.ai — AI-Powered Email Threat & Forensic Intelligence Platform",
+        "platform": "MailShield — AI-Powered Email Threat & Forensic Intelligence Platform",
         "classification": "CONFIDENTIAL — FOR AUTHORIZED INVESTIGATIVE USE ONLY",
         "case_summary": {
             "subject": subject,
@@ -1132,7 +1445,7 @@ def get_report(case_id: str, full: bool = False):
             "analyzed_at": analysis.get("analyzed_at") or datetime.now(timezone.utc).isoformat(),
         },
         "chain_of_custody": {
-            "received_by": "trace.ai automated ingestion engine",
+            "received_by": "MailShield automated ingestion engine",
             "analyzed_by": "AI Forensic Engine v2.0 (NLP + Header + Geo + Intel Correlation)",
             "evidence_hash_algo": evidence_hash.get("algo", "SHA-256"),
             "sha256": evidence_hash.get("sha256", "COMPUTED_AT_INGESTION"),
@@ -1266,39 +1579,7 @@ def update_privacy_config(req: PrivacyConfigUpdate):
 
 @app.get("/campaigns")
 def get_campaigns():
-    enriched = []
-    for c in CAMPAIGN_DB:
-        case_refs = [
-            case for case in CASES_DB
-            if any(ioc.lower() in case["sender"].lower() for ioc in c["iocs"])
-            or any(ioc.lower() in (case.get("raw_data", {}).get("subject", case["subject"]).lower() if isinstance(case.get("raw_data"), dict) else case["subject"].lower()) for ioc in c["iocs"])
-        ]
-        enriched.append({
-            **c,
-            "related_case_ids": [x["id"] for x in case_refs],
-            "avg_risk_score": (sum(x["score"] for x in case_refs) / len(case_refs)) if case_refs else 0,
-        })
-
-    all_case_ids_in_camps = set()
-    for e in enriched:
-        all_case_ids_in_camps.update(e["related_case_ids"])
-
-    orphans = [c["id"] for c in CASES_DB if c["id"] not in all_case_ids_in_camps]
-    if orphans:
-        enriched.append({
-            "id": "CAMP-UNCATEGORIZED",
-            "name": "Uncategorized / Standalone incidents",
-            "risk": "LOW",
-            "accent": "green",
-            "count": len(orphans),
-            "iocs": [],
-            "first_seen": "N/A",
-            "last_seen": "N/A",
-            "ttps": [],
-            "related_case_ids": orphans,
-            "avg_risk_score": (sum(next(x for x in CASES_DB if x["id"] == o)["score"] for o in orphans) / len(orphans)),
-        })
-    return enriched
+    return db.list_campaigns()
 
 
 # ── SSE Real-Time Alert Stream ───────────────────────────────────────────────
@@ -1330,26 +1611,37 @@ async def alerts_stream(request: Request):
 
 @app.get("/analysis/{case_id}")
 def get_cached_analysis(case_id: str):
-    if case_id in ANALYSIS_CACHE:
-        return ANALYSIS_CACHE[case_id]
-    static = next((c for c in CASES_DB if c["id"] == case_id), None)
-    if static:
-        raw = static.get("raw_data", {}) if isinstance(static.get("raw_data"), dict) else {}
-        return {
-            "case_id": case_id,
-            "subject": static.get("subject"),
-            "from": static.get("sender"),
-            "score": static.get("score"),
-            "label": static.get("label"),
-            "accent": static.get("accent"),
-            "flags": raw.get("flags", []),
-            "ips": raw.get("ips", []),
-            "urls": raw.get("urls", []),
-            "attachments": raw.get("attachments", []),
-            "geo": raw.get("geo", []),
-            "source": "static_db",
-        }
-    raise HTTPException(status_code=404, detail="Case/analysis not found")
+    row = db.get_case_row(case_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Case/analysis not found")
+    analysis = row.get("analysis") or {}
+    if isinstance(analysis, str):
+        analysis = json.loads(analysis)
+    return {
+        "case_id": case_id,
+        "subject": row.get("subject") or analysis.get("subject"),
+        "from": row.get("sender") or analysis.get("from"),
+        "score": analysis.get("score", row.get("score")),
+        "label": analysis.get("label", row.get("label")),
+        "accent": analysis.get("accent", row.get("accent")),
+        "flags": analysis.get("flags", []),
+        "ips": analysis.get("ips", []),
+        "urls": analysis.get("urls", []),
+        "url_analysis": analysis.get("url_analysis", []),
+        "attachments": analysis.get("attachments", []),
+        "geo": analysis.get("geo", []),
+        "hops": analysis.get("hops", []),
+        "auth": analysis.get("auth", {}),
+        "originating_ip": analysis.get("originating_ip", {}),
+        "origin_attribution": analysis.get("origin_attribution", {}),
+        "display_name_spoofing": analysis.get("display_name_spoofing", {}),
+        "correlation_graph": analysis.get("correlation_graph", {}),
+        "campaign": analysis.get("campaign", {}),
+        "ttps": analysis.get("ttps", []),
+        "recommendations": analysis.get("recommendations", []),
+        "evidence_hash": analysis.get("evidence_hash", {}),
+        "analyzed_at": analysis.get("analyzed_at"),
+    }
 
 
 @app.get("/geoip/{ip}")
@@ -1364,19 +1656,63 @@ def health():
     return {"status": "ok", "timestamp": datetime.now(timezone.utc).isoformat()}
 
 
+# ── Workspaces (global threat-domain hub) ────────────────────────────────────
+
+class WorkspaceRequest(BaseModel):
+    name: str
+    description: Optional[str] = None
+
+
+@app.get("/workspaces")
+def get_workspaces():
+    return db.list_workspaces()
+
+
+@app.post("/workspaces")
+def add_workspace(req: WorkspaceRequest):
+    name = (req.name or "").strip()
+    if not name or len(name) > 60:
+        raise HTTPException(status_code=400, detail="Workspace name must be 1–60 characters")
+    ws = db.create_workspace(name, req.description)
+    if not ws:
+        raise HTTPException(status_code=409, detail="A workspace like this already exists")
+    audit_log("WORKSPACE_CREATED", {"id": ws["id"], "name": ws["name"]})
+    return {"status": "created", "workspace": ws}
+
+
+@app.delete("/workspaces/{ws_id}")
+def remove_workspace(ws_id: int):
+    status, row = db.delete_workspace(ws_id)
+    if status == "not_found":
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    if status == "builtin":
+        raise HTTPException(status_code=400, detail="Core threat domains are shared by the whole community and cannot be removed")
+    if status == "has_cases":
+        raise HTTPException(status_code=400, detail="This domain still has analyzed cases — resolve or export them first")
+    audit_log("WORKSPACE_DELETED", {"id": row["id"], "name": row["name"]})
+    return {"status": "deleted", "workspace": row}
+
+
 @app.post("/connect-account")
-def connect_account(req: AccountConnectRequest):
+async def connect_account(req: AccountConnectRequest):
     try:
-        res = test_connection(req.provider, req.email, req.password, req.custom_host, req.custom_port or 993)
-        acct_meta = {
-            "id": f"{req.provider}-{req.email}",
+        res = await asyncio.to_thread(
+            test_connection, req.provider, req.email, req.password,
+            req.custom_host, req.custom_port or 993,
+        )
+        acct_id = f"{req.provider}-{req.email}"
+        db.upsert_connected_account(acct_id, req.provider, req.email, "imap", encrypt_secret(req.password))
+        meta = {
+            "id": acct_id,
             "provider": req.provider,
             "email": req.email,
+            "method": "imap",
             "status": "connected",
-            "connected_at": datetime.now(timezone.utc).isoformat()
+            "live_sync": True,
         }
-        if not any(a["id"] == acct_meta["id"] for a in CONNECTED_ACCOUNTS):
-            CONNECTED_ACCOUNTS.append(acct_meta)
+        if not any(a["id"] == meta["id"] for a in CONNECTED_ACCOUNTS):
+            CONNECTED_ACCOUNTS.append(meta)
+        set_live_enabled(True)  # first connected account switches real-time sync on
         return res
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -1384,7 +1720,62 @@ def connect_account(req: AccountConnectRequest):
 
 @app.get("/connected-accounts")
 def get_connected_accounts():
-    return CONNECTED_ACCOUNTS
+    try:
+        rows = db.list_connected_accounts()
+        return [
+            {
+                "id": r["id"], "provider": r["provider"], "email": r["email"],
+                "method": r["method"], "enabled": r["enabled"],
+                "last_sync_at": r["last_sync_at"].isoformat() if r["last_sync_at"] else None,
+                "last_status": r["last_status"],
+                "processed": r["processed"],
+            }
+            for r in rows
+        ]
+    except Exception:
+        return CONNECTED_ACCOUNTS
+
+
+@app.delete("/connected-accounts/{acct_id:path}")
+def remove_connected_account(acct_id: str):
+    ok = db.delete_connected_account(acct_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Account not found")
+    return {"status": "removed", "id": acct_id}
+
+
+@app.get("/live-status")
+def live_status():
+    accounts = []
+    try:
+        accounts = [
+            {
+                "email": r["email"], "provider": r["provider"],
+                "last_sync_at": r["last_sync_at"].isoformat() if r["last_sync_at"] else None,
+                "last_status": r["last_status"], "processed": r["processed"],
+            }
+            for r in db.list_connected_accounts() if r["enabled"]
+        ]
+    except Exception:
+        pass
+    return {
+        "enabled": LIVE_STATE["enabled"],
+        "interval": LIVE_STATE["interval"],
+        "accounts": accounts,
+    }
+
+
+@app.post("/live-toggle")
+async def live_toggle(req: LiveToggleRequest):
+    has_accounts = False
+    try:
+        has_accounts = any(a["enabled"] for a in db.list_connected_accounts())
+    except Exception:
+        pass
+    if req.enabled and not has_accounts:
+        raise HTTPException(status_code=400, detail="Connect a mailbox account first — nothing to sync yet.")
+    set_live_enabled(req.enabled)
+    return {"enabled": LIVE_STATE["enabled"], "interval": LIVE_STATE["interval"]}
 
 
 class PollTokenRequest(BaseModel):
@@ -1401,22 +1792,41 @@ def outlook_device_code():
 
 
 @app.post("/auth/outlook/poll-token")
-def outlook_poll_token(req: PollTokenRequest):
+async def outlook_poll_token(req: PollTokenRequest):
     try:
-        poll_res = poll_outlook_token(req.device_code)
+        poll_res = await asyncio.to_thread(poll_outlook_token, req.device_code)
         if poll_res.get("status") == "pending":
             return poll_res
-        
+
         access_token = poll_res.get("access_token")
-        raw_list = fetch_outlook_live_emails_via_graph(access_token, max_emails=req.max_emails or 5)
-        
+        refresh_token = poll_res.get("refresh_token")
+        if refresh_token:
+            try:
+                me_res = requests.get(
+                    "https://graph.microsoft.com/v1.0/me",
+                    headers={"Authorization": f"Bearer {access_token}"}, timeout=8,
+                )
+                oaddr = me_res.json().get("mail") or me_res.json().get("userPrincipalName") or "outlook-user"
+                acct_id = f"outlook-{oaddr}"
+                db.upsert_connected_account(acct_id, "outlook", oaddr, "oauth", encrypt_secret(refresh_token))
+                meta = {"id": acct_id, "provider": "outlook", "email": oaddr, "method": "oauth", "status": "connected"}
+                if not any(a["id"] == meta["id"] for a in CONNECTED_ACCOUNTS):
+                    CONNECTED_ACCOUNTS.append(meta)
+                set_live_enabled(True)
+            except Exception:
+                logging.exception("Could not register Outlook account for live sync")
+
+        raw_list = await asyncio.to_thread(
+            fetch_outlook_live_emails_via_graph, access_token, max_emails=req.max_emails or 5
+        )
+
         analyzed_results = []
         for raw in raw_list:
             try:
-                analyzed = analyze_email(EmailRequest(raw=raw))
+                analyzed = await analyze_email(EmailRequest(raw=raw))
                 analyzed_results.append(analyzed)
-            except Exception as e:
-                logging.error("Failed to analyze live Outlook email: %s", str(e))
+            except Exception:
+                logging.exception("Failed to analyze live Outlook email")
 
         return {
             "status": "complete",
@@ -1429,24 +1839,24 @@ def outlook_poll_token(req: PollTokenRequest):
 
 
 @app.post("/fetch-live")
-def fetch_live_emails(req: FetchLiveRequest):
+async def fetch_live_emails(req: FetchLiveRequest):
     try:
-        raw_list = fetch_unread_emails(
+        raw_list = await asyncio.to_thread(
+            fetch_unread_emails,
             provider=req.provider,
             email_address=req.email,
             password=req.password,
             max_emails=req.max_emails or 5,
             custom_host=req.custom_host,
             custom_port=req.custom_port or 993,
-            use_demo=req.use_demo or False
         )
         analyzed_results = []
         for raw in raw_list:
             try:
-                analyzed = analyze_email(EmailRequest(raw=raw))
+                analyzed = await analyze_email(EmailRequest(raw=raw))
                 analyzed_results.append(analyzed)
-            except Exception as e:
-                logging.error("Failed to analyze fetched email: %s", str(e))
+            except Exception:
+                logging.exception("Failed to analyze fetched email")
 
         return {
             "count": len(analyzed_results),
@@ -1455,87 +1865,110 @@ def fetch_live_emails(req: FetchLiveRequest):
             "cases": analyzed_results
         }
     except Exception as e:
+        logging.exception("Live fetch failed for %s (%s)", req.email, req.provider)
         raise HTTPException(status_code=400, detail=str(e))
 
 
 @app.get("/cases")
-def get_cases():
-    return CASES_DB
+def get_cases(ws: Optional[str] = None):
+    cases = []
+    for c in db.get_open_cases(ws):
+        cases.append({
+            "id": c["id"],
+            "sender": c["sender"] or "",
+            "subject": c["subject"] or "",
+            "received_at": c["received_at"].isoformat() if c["received_at"] else None,
+            "score": c["score"],
+            "label": c["label"],
+            "accent": c["accent"],
+            "initials": c["initials"],
+        })
+    return cases
 
 
 @app.post("/cases")
 def add_case(case_data: dict):
-    CASES_DB.insert(0, case_data)
-    return {"status": "added", "case_id": case_data.get("id")}
+    case_id = case_data.get("id") or db.next_case_id()
+    analysis = case_data.get("raw_data") or {}
+    db.insert_case(
+        case_id,
+        case_data.get("sender"),
+        case_data.get("subject"),
+        case_data.get("score", 0),
+        case_data.get("label", "LOW"),
+        case_data.get("accent", "green"),
+        (case_data.get("sender") or "EM")[:2].upper(),
+        None,
+        {"case_id": case_id, **analysis},
+    )
+    return {"status": "added", "case_id": case_id}
 
 
 @app.post("/cases/{case_id}/resolve")
 def resolve_case(case_id: str, req: ResolveCaseRequest):
-    global CASES_DB, CASE_HISTORY_DB
-    found_idx = -1
-    for idx, c in enumerate(CASES_DB):
-        if c["id"] == case_id:
-            found_idx = idx
-            break
-
-    if found_idx == -1:
+    row = db.resolve_case(case_id, req.action or "Resolved by analyst", req.analyst or "AS")
+    if not row:
         raise HTTPException(status_code=404, detail="Case not found")
-
-    found_case = CASES_DB.pop(found_idx)
     resolved_entry = {
-        "id": found_case["id"],
-        "sender": found_case["sender"],
-        "subject": found_case["subject"],
-        "closed": datetime.now(timezone.utc).strftime("%d %b %Y"),
-        "score": found_case["score"],
-        "label": found_case["label"],
-        "accent": found_case["accent"],
-        "resolution": req.action or "Resolved by analyst",
-        "analyst": req.analyst or "AS",
+        "id": row["id"],
+        "sender": row["sender"] or "",
+        "subject": row["subject"] or "",
+        "closed": row["resolved_at"].strftime("%d %b %Y") if row["resolved_at"] else "—",
+        "score": row["score"],
+        "label": row["label"],
+        "accent": row["accent"],
+        "resolution": row["resolution"] or "—",
+        "analyst": row["analyst"] or "—",
     }
-    CASE_HISTORY_DB.insert(0, resolved_entry)
     return {"status": "resolved", "case": resolved_entry}
 
 
 @app.get("/threat-intel")
 def get_threat_intel():
     iocs = [
-        {"type": "DOMAIN", "value": "micros0ft.com", "threat": "Lookalike · BEC", "detections": 14, "vt": 8, "status": "MALICIOUS", "accent": "red"},
-        {"type": "DOMAIN", "value": "northstar-holdings.co", "threat": "BEC · CEO fraud", "detections": 6, "vt": 5, "status": "MALICIOUS", "accent": "red"},
-        {"type": "DOMAIN", "value": "cloud-storage-verify.net", "threat": "Phishing kit", "detections": 200, "vt": 3, "status": "SUSPICIOUS", "accent": "orange"},
-        {"type": "IP", "value": "185.23.45.10", "threat": "Open relay · Agra IN", "detections": 9, "vt": 2, "status": "SUSPICIOUS", "accent": "orange"},
-        {"type": "IP", "value": "41.58.120.77", "threat": "Residential proxy · Lagos NG", "detections": 4, "vt": 1, "status": "SUSPICIOUS", "accent": "orange"},
-        {"type": "IP", "value": "95.216.44.22", "threat": "Hetzner VPS · Frankfurt DE", "detections": 3, "vt": 0, "status": "WATCHLIST", "accent": "yellow"},
-        {"type": "URL", "value": "http://secure-example-login.test/verify", "threat": "Credential harvesting", "detections": 7, "vt": 11, "status": "MALICIOUS", "accent": "red"},
-        {"type": "HASH", "value": "d41d8cd98f00b204e9800998ecf8427e", "threat": "Macro dropper · Invoice_8831.xlsm", "detections": 2, "vt": 6, "status": "MALICIOUS", "accent": "red"},
+        {
+            "type": r["type"],
+            "value": r["value"],
+            "threat": r["threat"] or "—",
+            "detections": r["detections"],
+            "vt": r["vt"],
+            "status": r["status"] or "WATCHLIST",
+            "accent": r["accent"] or "yellow",
+        }
+        for r in db.list_iocs()
     ]
-
     ttps = [
-        {"id": "T1566.001", "name": "Spearphishing Attachment", "count": 3},
-        {"id": "T1566.002", "name": "Spearphishing via Link", "count": 5},
-        {"id": "T1036.005", "name": "Match Legitimate Name", "count": 4},
-        {"id": "T1078", "name": "Valid Accounts", "count": 2},
-        {"id": "T1534", "name": "Internal Spearphishing", "count": 1},
-        {"id": "T1657", "name": "Financial Theft (BEC)", "count": 2},
+        {"id": t["id"], "name": t["name"] or t["id"], "count": t["count"]}
+        for t in db.aggregate_ttps()
     ]
-
     return {"iocs": iocs, "ttps": ttps}
 
 
 @app.get("/infrastructure")
 def get_infrastructure():
-    nodes = [
-        {"ip": "185.23.45.10", "host": "mail-relay.pro", "city": "Agra", "country": "IN", "org": "AS12345 BulkHosting", "lat": 27.18, "lng": 78.01, "type": "RELAY", "risk": "red"},
-        {"ip": "41.58.120.77", "host": "proxy-ng.net", "city": "Lagos", "country": "NG", "org": "AS37148 MainOne", "lat": 6.52, "lng": 3.38, "type": "PROXY", "risk": "red"},
-        {"ip": "95.216.44.22", "host": "vps-de.hetzner.com", "city": "Frankfurt", "country": "DE", "org": "AS24940 Hetzner", "lat": 50.11, "lng": 8.68, "type": "VPS", "risk": "orange"},
-        {"ip": "203.0.113.10", "host": "mail.example.com", "city": "Mumbai", "country": "IN", "org": "AS55836 Reliance", "lat": 19.07, "lng": 72.87, "type": "LEGIT", "risk": "green"},
-        {"ip": "198.51.100.25", "host": "suspicious-host.test", "city": "Amsterdam", "country": "NL", "org": "AS20473 Vultr", "lat": 52.37, "lng": 4.89, "type": "PHISH", "risk": "red"},
-    ]
+    nodes = []
+    for n in db.list_infrastructure():
+        nodes.append({
+            "ip": n["ip"],
+            "host": n["host"] or "—",
+            "city": n["city"] or "Unknown",
+            "country": n["country"] or "",
+            "org": n["org"] or "—",
+            "lat": n["lat"],
+            "lng": n["lng"],
+            "type": n["type"] or "NODE",
+            "risk": n["risk"] or "green",
+        })
     return nodes
 
 
+@app.get("/stats")
+def get_stats(ws: Optional[str] = None):
+    return db.get_stats(ws)
+
+
 @app.get("/case-history")
-def get_case_history():
-    return CASE_HISTORY_DB
+def get_case_history(ws: Optional[str] = None):
+    return db.get_resolved_cases(ws)
 
 

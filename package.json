@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "concurrently -n \"BACKEND,FRONTEND\" -c \"cyan,magenta\" \"npm run dev:backend\" \"npm run dev:frontend\"",
-    "dev:backend": "cd backend/email_threat_service && (.venv/bin/uvicorn main:app --reload --host 0.0.0.0 --port 8000 || uvicorn main:app --reload --host 0.0.0.0 --port 8000)",
+    "dev:backend": "cd backend/email_threat_service && .venv/bin/python -m uvicorn main:app --reload --host 0.0.0.0 --port 8000",
     "dev:frontend": "npm --prefix frontend run dev",
     "start": "npm run dev"
   },

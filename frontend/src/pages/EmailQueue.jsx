@@ -1,5 +1,6 @@
 import { useState } from "react";
 import Icon from "../components/Icon";
+import { dash, timeAgo } from "../App";
 
 export default function EmailQueue({ cases = [], onSelectCase, onAnalyze }) {
   const [filter, setFilter] = useState("All");
@@ -39,14 +40,18 @@ export default function EmailQueue({ cases = [], onSelectCase, onAnalyze }) {
             onClick={() => onSelectCase && onSelectCase(e)}
             style={{ cursor: "pointer" }}
           >
-            <span className="queue-sender"><span className={`case-avatar ${e.accent}`} style={{ width: 26, height: 26, fontSize: 8 }}>{e.initials || "EM"}</span><span>{e.sender}</span></span>
-            <span className="queue-subject">{e.subject}<small>{e.id}</small></span>
-            <span className="queue-time">{e.time || "recent"}</span>
-            <span className={`queue-score ${e.accent}`}>{e.score}</span>
-            <span className={`severity ${e.accent}`}>{e.label}</span>
+            <span className="queue-sender"><span className={`case-avatar ${e.accent}`} style={{ width: 26, height: 26, fontSize: 9 }}>{e.initials || "EM"}</span><span>{dash(e.sender)}</span></span>
+            <span className="queue-subject">{e.subject || "(No subject)"}<small>{e.id}</small></span>
+            <span className="queue-time">{timeAgo(e.received_at || e.time)}</span>
+            <span className={`queue-score ${e.accent}`}>{e.score ?? "—"}</span>
+            <span className={`severity ${e.accent}`}>{e.label || "—"}</span>
           </div>
         ))}
-        {visible.length === 0 && <p style={{ padding: "20px", color: "var(--muted)", fontSize: 12 }}>No emails match your filter.</p>}
+        {visible.length === 0 && (
+          <p style={{ padding: "20px", color: "var(--muted)", fontSize: 13 }}>
+            {cases.length === 0 ? "No emails in queue yet — analyze an email or sync live mail." : "No emails match your filter."}
+          </p>
+        )}
       </div>
     </div>
   );

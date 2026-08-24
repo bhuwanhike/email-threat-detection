@@ -176,60 +176,7 @@ def test_connection(provider: str, email_address: str, password: str, custom_hos
     raise RuntimeError(friendly_err)
 
 
-def get_demo_raw_emails(provider: str, email_address: str, max_emails: int = 3) -> list:
-    """Returns realistic raw RFC822 email payloads for instant live testing."""
-    domain = email_address.split("@")[-1] if "@" in email_address else "outlook.com"
-    demo_emails = [
-        f"""From: "Accounts Payable" <accounts-payable@micros0ft-billing.com>
-To: <{email_address}>
-Subject: URGENT: Overdue Invoice #99412 - Immediate Action Required
-Date: Mon, 24 Aug 2026 00:10:00 +0000
-Message-ID: <live-demo-1@{domain}>
-Content-Type: text/plain; charset="utf-8"
-
-Dear Customer,
-
-Your account statement is past due. Please review the attached invoice Invoice_88412.xlsm immediately to avoid service interruption.
-
-Verify online: http://micros0ft-billing.com/pay-now
-
-Origin Server: 185.23.45.10 (Agra, IN)
-""",
-        f"""From: "Executive Office" <ceo.office@northstar-holdings-corp.net>
-To: <{email_address}>
-Subject: CONFIDENTIAL: Wire Transfer Request for Acquisition
-Date: Sun, 23 Aug 2026 23:45:00 +0000
-Message-ID: <live-demo-2@{domain}>
-Content-Type: text/plain; charset="utf-8"
-
-Hi,
-
-Please process a wire transfer of $45,000 for the pending acquisition today. 
-Reply directly to this email with confirmation details once sent.
-
-Sender Proxy: 41.58.120.77 (Lagos, NG)
-""",
-        f"""From: "Cloud Storage Alert" <support@cloud-verify-storage.net>
-To: <{email_address}>
-Subject: Warning: Your storage allocation is 98% full
-Date: Sun, 23 Aug 2026 22:30:00 +0000
-Message-ID: <live-demo-3@{domain}>
-Content-Type: text/plain; charset="utf-8"
-
-Your storage mailbox is almost full. Upgrade your storage quota now to continue receiving messages:
-
-http://cloud-verify-storage.net/login
-
-Host VPS: 95.216.44.22 (Frankfurt, DE)
-"""
-    ]
-    return demo_emails[:max_emails]
-
-
-def fetch_unread_emails(provider: str, email_address: str, password: str, max_emails: int = 5, custom_host: str = None, custom_port: int = 993, use_demo: bool = False) -> list:
-    if use_demo or password.strip().lower() in ("demo", "test", "demo123"):
-        return get_demo_raw_emails(provider, email_address, max_emails)
-
+def fetch_unread_emails(provider: str, email_address: str, password: str, max_emails: int = 5, custom_host: str = None, custom_port: int = 993) -> list:
     configs = get_imap_configs(provider, custom_host, custom_port)
     raw_emails = []
     last_err = None

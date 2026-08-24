@@ -1,60 +1,7 @@
 import { useEffect, useState } from "react";
 import Icon from "../components/Icon";
 
-const defaultCampaigns = [
-  {
-    id: "CAMP-INVOICE-01",
-    name: "INVOICE-STORM · Microsoft Lookalike BEC",
-    risk: "CRITICAL",
-    accent: "red",
-    count: 14,
-    iocs: ["micros0ft.com", "micros0ft-billing.com", "185.23.45.10"],
-    first_seen: "18 Aug 2026",
-    last_seen: "24 Aug 2026",
-    ttps: ["T1566.001", "T1036.005", "T1078"],
-    related_case_ids: ["INC-2481"],
-    avg_risk_score: 94,
-  },
-  {
-    id: "CAMP-WIRE-02",
-    name: "CEO-WIRE-01 · Executive Impersonation",
-    risk: "HIGH",
-    accent: "orange",
-    count: 6,
-    iocs: ["northstar-holdings.co", "41.58.120.77"],
-    first_seen: "20 Aug 2026",
-    last_seen: "23 Aug 2026",
-    ttps: ["T1566.002", "T1534", "T1657"],
-    related_case_ids: ["INC-2479"],
-    avg_risk_score: 81,
-  },
-  {
-    id: "CAMP-CLOUD-03",
-    name: "CLOUD-LURE-22 · Commodity Phishing Kit",
-    risk: "MEDIUM",
-    accent: "yellow",
-    count: 200,
-    iocs: ["cloud-storage-verify.net", "cloud-verify-storage.net", "95.216.44.22"],
-    first_seen: "15 Aug 2026",
-    last_seen: "23 Aug 2026",
-    ttps: ["T1566.002", "T1598.003"],
-    related_case_ids: ["INC-2476"],
-    avg_risk_score: 67,
-  },
-  {
-    id: "CAMP-UNCATEGORIZED",
-    name: "Uncategorized / Standalone incidents",
-    risk: "LOW",
-    accent: "green",
-    count: 1,
-    iocs: [],
-    first_seen: "N/A",
-    last_seen: "N/A",
-    ttps: [],
-    related_case_ids: ["INC-2472"],
-    avg_risk_score: 12,
-  },
-];
+const API = import.meta.env.VITE_API_URL || "http://localhost:8000";
 
 export default function Campaigns({ campaigns: propCampaigns }) {
   const [data, setData] = useState(propCampaigns || null);
@@ -65,13 +12,13 @@ export default function Campaigns({ campaigns: propCampaigns }) {
       setData(propCampaigns);
       return;
     }
-    fetch("http://localhost:8000/campaigns")
+    fetch(`${API}/campaigns`)
       .then(r => r.json())
       .then(d => setData(d))
-      .catch(() => setData(defaultCampaigns));
+      .catch(() => setData([]));
   }, [propCampaigns]);
 
-  const list = data || defaultCampaigns;
+  const list = data || [];
 
   const openCase = caseId => {
     setSelected(caseId);
@@ -134,6 +81,12 @@ export default function Campaigns({ campaigns: propCampaigns }) {
         CAMPAIGN CLUSTERS · Grouped by shared infrastructure / TTPs
       </div>
 
+      {list.length === 0 && (
+        <p style={{ padding: "20px", color: "var(--muted)", fontSize: 13, border: "1px dashed var(--line)", borderRadius: 8 }}>
+          No campaigns detected yet — clusters form automatically when analyzed emails share infrastructure or TTPs.
+        </p>
+      )}
+
       <div style={{ display: "grid", gap: 14, gridTemplateColumns: "repeat(auto-fill, minmax(360px, 1fr))" }}>
         {list.map(c => (
           <div key={c.id} className="sr-card" style={{ borderLeft: `4px solid var(--${c.accent})`, cursor: "pointer" }} onClick={() => setSelected(selected === c.id ? null : c.id)}>
@@ -141,34 +94,34 @@ export default function Campaigns({ campaigns: propCampaigns }) {
               <div>
                 <span className="ioc-type-badge" style={{ marginRight: 6 }}>{c.id.split("-")[1]}</span>
                 <span className={`severity ${c.accent}`}>{c.risk}</span>
-                <p style={{ fontSize: 11, fontWeight: 700, marginTop: 6, color: "var(--ink)" }}>{c.name}</p>
+                <p style={{ fontSize: 12, fontWeight: 700, marginTop: 6, color: "var(--ink)" }}>{c.name}</p>
               </div>
               <div style={{ textAlign: "right" }}>
                 <small style={{ color: "var(--muted)" }}>Emails</small>
-                <b style={{ display: "block", fontFamily: "'Space Mono',monospace", fontSize: 14 }}>{c.count}</b>
+                <b style={{ display: "block", fontFamily: "'Space Mono',monospace", fontSize: 15 }}>{c.count}</b>
               </div>
             </div>
 
-            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, color: "var(--muted)", marginBottom: 10 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: "var(--muted)", marginBottom: 10 }}>
               <span>First seen: {c.first_seen}</span>
               <span>Avg score: <b style={{ color: c.avg_risk_score > 70 ? "var(--coral)" : "var(--ink)" }}>{Math.round(c.avg_risk_score || 0)}</b></span>
             </div>
 
             {c.ttps?.length > 0 && (
               <div style={{ marginBottom: 8 }}>
-                <small style={{ fontSize: 9, color: "var(--muted)", textTransform: "uppercase", letterSpacing: 0.5 }}>TTPs</small>
+                <small style={{ fontSize: 10, color: "var(--muted)", textTransform: "uppercase", letterSpacing: 0.5 }}>TTPs</small>
                 <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginTop: 4 }}>
-                  {c.ttps.map(t => <span key={t} className="hi-ttp-id" style={{ fontSize: 8 }}>{t}</span>)}
+                  {c.ttps.map(t => <span key={t} className="hi-ttp-id" style={{ fontSize: 9 }}>{t}</span>)}
                 </div>
               </div>
             )}
 
             {c.iocs?.length > 0 && (
               <div style={{ marginBottom: 8 }}>
-                <small style={{ fontSize: 9, color: "var(--muted)", textTransform: "uppercase", letterSpacing: 0.5 }}>Shared IOCs ({c.iocs.length})</small>
+                <small style={{ fontSize: 10, color: "var(--muted)", textTransform: "uppercase", letterSpacing: 0.5 }}>Shared IOCs ({c.iocs.length})</small>
                 <div style={{ marginTop: 4, maxHeight: selected === c.id ? 200 : 42, overflow: "hidden", transition: "max-height 0.2s" }}>
                   {c.iocs.map(i => (
-                    <div key={i} style={{ fontFamily: "'Space Mono',monospace", fontSize: 9, color: "var(--ink)", padding: "2px 0" }}>
+                    <div key={i} style={{ fontFamily: "'Space Mono',monospace", fontSize: 10, color: "var(--ink)", padding: "2px 0" }}>
                       {i}
                     </div>
                   ))}
@@ -178,7 +131,7 @@ export default function Campaigns({ campaigns: propCampaigns }) {
 
             {selected === c.id && c.related_case_ids?.length > 0 && (
               <div style={{ marginTop: 10, paddingTop: 10, borderTop: "1px solid var(--line)" }}>
-                <small style={{ fontSize: 9, color: "var(--muted)", textTransform: "uppercase", letterSpacing: 0.5 }}>Related Cases</small>
+                <small style={{ fontSize: 10, color: "var(--muted)", textTransform: "uppercase", letterSpacing: 0.5 }}>Related Cases</small>
                 <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 6 }}>
                   {c.related_case_ids.map(cid => (
                     <button
@@ -186,7 +139,7 @@ export default function Campaigns({ campaigns: propCampaigns }) {
                       onClick={e => { e.stopPropagation(); openCase(cid); }}
                       style={{
                         fontFamily: "'Space Mono',monospace",
-                        fontSize: 10,
+                        fontSize: 11,
                         padding: "4px 8px",
                         background: "var(--line)",
                         color: "var(--ink)",
@@ -203,7 +156,7 @@ export default function Campaigns({ campaigns: propCampaigns }) {
               </div>
             )}
 
-            <small style={{ fontSize: 9, color: "var(--muted)", marginTop: 6, display: "block" }}>
+            <small style={{ fontSize: 10, color: "var(--muted)", marginTop: 6, display: "block" }}>
               Click to {selected === c.id ? "collapse" : "expand"} · Last seen: {c.last_seen}
             </small>
           </div>
